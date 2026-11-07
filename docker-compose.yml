@@ -35,7 +35,9 @@ services:
       retries: 20
 
   app:
-    build: .
+    build:
+      context: .
+      target: app
     image: wager-processor:local
     environment:
       PORT: "3000"
@@ -61,3 +63,24 @@ services:
       interval: 3s
       timeout: 3s
       retries: 20
+
+  # `docker compose run --rm tests` runs the whole suite inside Linux, against the real
+  # Postgres and MiniStack above (SIGTERM/SIGKILL semantics match the evaluator's machine).
+  tests:
+    profiles: ["test"]
+    build:
+      context: .
+      target: test
+    image: wager-processor:test
+    environment:
+      DATABASE_ADMIN_URL: postgres://wager:wager@postgres:5432/postgres
+      DATABASE_URL: postgres://wager:wager@postgres:5432/wager
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      SQS_ENDPOINT: http://aws:4566
+    depends_on:
+      postgres:
+        condition: service_healthy
+      aws:
+        condition: service_healthy

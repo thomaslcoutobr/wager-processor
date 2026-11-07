@@ -23,6 +23,7 @@
     "@nestjs/common": "^12.4.0",
     "@nestjs/core": "^12.4.0",
     "@nestjs/platform-express": "^12.4.0",
+    "canonicalize": "5.1.0",
     "decimal.js": "^10.6.0",
     "pino": "^10.4.0",
     "prom-client": "^15.1.3",
