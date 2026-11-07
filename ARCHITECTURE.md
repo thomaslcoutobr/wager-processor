@@ -1,6 +1,7 @@
 # ARCHITECTURE — Wager Processor
 
-> **Status deste documento:** planta (v0), escrita em 07/11/2026 **antes do código**. Cada decisão
+> **Status deste documento:** planta aprovada em 07/11/2026 (v0, escrita **antes do código**) e
+> atualizada durante a implementação. Cada decisão
 > abaixo vira código e teste nas fatias da F3. Quando a implementação divergir da planta, este arquivo
 > é atualizado e a divergência fica registrada em [§20](#20-limitações-conhecidas-e-trade-offs).
 >
@@ -218,6 +219,10 @@ Interpretações que adotei (o enunciado pede que fiquem documentadas):
   trocasse a chave duplicaria o débito.
 - **Rejeição de negócio consome a chave.** `REJECTED` é terminal; tentar de novo é operação nova (outro
   `externalTransactionId`). Já um 400 não grava nada, e a mesma chave pode ser reenviada corrigida.
+- **Preenchidas na implementação (fatia 1):** `BET` com `referenceExternalTransactionId` é 400 (aposta não
+  referencia nada); uma transação que referencia o próprio `externalTransactionId` é 400; o `walletId` é
+  normalizado para minúsculas antes do hash (UUID não diferencia caixa, e o Postgres já guarda assim);
+  o `FAILED` também gera evento, `WagerTransactionFailed`, para a falha ficar visível a quem consome.
 
 ---
 
@@ -368,10 +373,12 @@ corresponde a exatamente um lançamento, e a cadeia `balance_before → balance_
 uma busca por índice no commit. A reconciliação ([§15](#15-reconciliação)) continua existindo para
 detectar o que só um papel privilegiado consegue fazer por fora.
 
-**[decisão; ainda não medida]** Esses triggers diferidos não estavam nos experimentos da pesquisa. Eles
-entram na fatia 2 com teste próprio: provar que um `UPDATE` de saldo sem lançamento, ou um lançamento
-sem `UPDATE`, falha no commit, e medir o custo no cenário da wallet quente. Se o custo for alto, eles
-viram verificação só no teste e a limitação vai para a [§20](#20-limitações-conhecidas-e-trade-offs).
+**[medido na fatia 2]** `test/integration/schema.test.ts` prova que um `UPDATE` de saldo sem lançamento,
+um lançamento sem `UPDATE`, um lançamento de transação `REJECTED` e um lançamento com `balance_before`
+errado falham no commit. Custo na wallet quente (`bun run bench:triggers`, dentro do compose: 300 apostas
+concorrentes de 1,00 numa wallet, pool de 10, 3 rodadas alternando ligado/desligado): mediana de 1.804 ms
+ligado contra 1.713 ms desligado, cerca de **5% a mais** (166 contra 175 operações por segundo). A medida
+é ruidosa e vale só a razão. Com esse custo, os triggers ficam ligados.
 
 ### 6.6 inbox_messages e outbox_messages
 

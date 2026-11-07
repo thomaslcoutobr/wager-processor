@@ -34,6 +34,19 @@ services:
       timeout: 3s
       retries: 20
 
+  # One-shot: applies the migrations as the table owner, then exits. The app only starts after it.
+  migrate:
+    build:
+      context: .
+      target: app
+    image: wager-processor:local
+    command: ["bun", "src/cli/migrate.ts"]
+    environment:
+      DATABASE_MIGRATION_URL: postgres://wager:wager@postgres:5432/wager
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   app:
     build:
       context: .
@@ -41,7 +54,8 @@ services:
     image: wager-processor:local
     environment:
       PORT: "3000"
-      DATABASE_URL: postgres://wager:wager@postgres:5432/wager
+      # least-privilege role: no DELETE/TRUNCATE, only SELECT/INSERT on the ledger, owns nothing
+      DATABASE_URL: postgres://wager_app:wager_app@postgres:5432/wager
       AWS_REGION: us-east-1
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
@@ -54,8 +68,8 @@ services:
     # Must be longer than SHUTDOWN_GRACE_MS so in-flight messages can finish before SIGKILL.
     stop_grace_period: 20s
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       aws:
         condition: service_healthy
     healthcheck:

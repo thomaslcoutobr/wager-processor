@@ -9,7 +9,7 @@ COPY tsconfig.json ./
 COPY src ./src
 COPY test ./test
 ENV NODE_ENV=test
-CMD ["bun", "test"]
+CMD ["bun", "run", "test"]
 
 FROM deps AS app
 COPY tsconfig.json ./

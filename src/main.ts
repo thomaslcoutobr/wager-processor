@@ -1,24 +1,16 @@
 import "reflect-metadata";
-import { Controller, Get, Module } from "@nestjs/common";
-import { NestFactory } from "@nestjs/core";
-
-@Controller("health")
-class HealthController {
-  @Get("live")
-  live(): { status: string } {
-    return { status: "ok" };
-  }
-}
-
-@Module({ controllers: [HealthController] })
-class AppModule {}
+import { createApp } from "./app";
+import { loadConfig } from "./infrastructure/config";
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create(AppModule, { logger: ["error", "warn"] });
+  const config = loadConfig();
+  const app = await createApp(config);
   app.enableShutdownHooks();
-  const port = Number(process.env.PORT ?? 3000);
-  await app.listen(port);
-  console.log(JSON.stringify({ msg: "listening", port }));
+  await app.listen(config.port, "0.0.0.0");
+  console.log(JSON.stringify({ level: "info", msg: "listening", port: config.port }));
 }
 
-void bootstrap();
+bootstrap().catch((err) => {
+  console.error(JSON.stringify({ level: "fatal", msg: "startup failed", err: String(err) }));
+  process.exit(1);
+});
