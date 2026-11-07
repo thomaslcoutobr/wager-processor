@@ -13,6 +13,10 @@ import { MikroReadStore } from "./infrastructure/persistence/mikro-read-store";
 import { MikroUnitOfWork } from "./infrastructure/persistence/mikro-unit-of-work";
 import { createOrm } from "./infrastructure/persistence/orm";
 import { SystemClock, UuidV7Generator } from "./infrastructure/system";
+import { createLogger, type Logger } from "./infrastructure/observability/logger";
+import { type BackgroundJob, BackgroundJobs } from "./infrastructure/workers/background-jobs";
+import { PendingReferenceWorker } from "./infrastructure/workers/pending-reference-worker";
+import { ResolvePendingReference } from "./application/resolve-pending-reference";
 import { AnonymousIdentity, PROVIDER_IDENTITY, ProviderAuthGuard } from "./interfaces/http/auth";
 import { HealthChecks, HealthController } from "./interfaces/http/health.controller";
 import { jsonBody } from "./interfaces/http/json-body";
@@ -43,6 +47,10 @@ export interface Container {
   read: MikroReadStore;
   uow: MikroUnitOfWork;
   policy: PendingReferencePolicy;
+  log: Logger;
+  resolvePending: ResolvePendingReference;
+  pendingWorker: PendingReferenceWorker;
+  jobs: BackgroundJob[];
 }
 
 export async function buildContainer(config: AppConfig, overrides: AppOverrides = {}): Promise<Container> {
@@ -64,6 +72,18 @@ export async function buildContainer(config: AppConfig, overrides: AppOverrides 
       },
     },
   ]);
+  const log = createLogger(config.logLevel);
+  const resolvePending = new ResolvePendingReference(uow, clock, ids, policy, metrics, random);
+  const pendingWorker = new PendingReferenceWorker(
+    read,
+    resolvePending,
+    clock,
+    metrics,
+    { pollMs: config.pendingReference.pollMs, batchSize: config.pendingReference.batchSize },
+    log,
+  );
+  const jobs: BackgroundJob[] = [];
+  if (config.enable.pendingWorker) jobs.push({ name: "pending-reference-worker", start: () => pendingWorker.start(), stop: () => pendingWorker.stop() });
   return {
     config,
     orm,
@@ -75,6 +95,10 @@ export async function buildContainer(config: AppConfig, overrides: AppOverrides 
     uow,
     read,
     policy,
+    log,
+    resolvePending,
+    pendingWorker,
+    jobs,
     submit: new SubmitWagerTransaction(uow, read, clock, ids, policy, metrics, random),
     createWallet: new CreateWallet(uow, clock, ids, metrics),
   };
@@ -104,23 +128,23 @@ class AppModule {
         { provide: TOKENS.metrics, useValue: c.metrics },
         { provide: PROVIDER_IDENTITY, useValue: new AnonymousIdentity() },
         { provide: TOKENS.lifecycle, useValue: new OrmLifecycle(c.orm) },
+        { provide: TOKENS.jobs, useValue: new BackgroundJobs(c.jobs, c.health) },
         ProviderAuthGuard,
       ],
     };
   }
 }
 
-export async function createApp(config: AppConfig, overrides: AppOverrides = {}): Promise<INestApplication> {
+export async function createApp(
+  config: AppConfig,
+  overrides: AppOverrides = {},
+): Promise<{ app: INestApplication; container: Container }> {
   const container = await buildContainer(config, overrides);
   const app = await NestFactory.create(AppModule.forRoot(container), {
     bodyParser: false,
     logger: config.logLevel === "silent" ? false : ["error", "warn"],
   });
   app.use(jsonBody(64 * 1024));
-  app.useGlobalFilters(
-    new ProblemFilter((error) => {
-      if (config.logLevel !== "silent") console.error(JSON.stringify({ level: "error", msg: "request failed", err: String(error) }));
-    }),
-  );
-  return app;
+  app.useGlobalFilters(new ProblemFilter((error) => container.log("error", "request failed", { err: String(error) })));
+  return { app, container };
 }

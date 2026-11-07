@@ -1,7 +1,7 @@
 import type { MikroORM } from "@mikro-orm/postgresql";
 import type { ReadStore } from "../../application/ports";
 import type { WalletLedgerEntry } from "../../domain/ledger-entry";
-import type { WagerTransaction } from "../../domain/wager-transaction";
+import { type WagerTransaction, WagerTransactionStatus } from "../../domain/wager-transaction";
 import type { Wallet } from "../../domain/wallet";
 import { translateDbError } from "./db-errors";
 import { type LedgerRow, ledgerMapper, type TransactionRow, transactionMapper, type WalletRow, walletMapper } from "./mappers";
@@ -44,6 +44,17 @@ export class MikroReadStore implements ReadStore {
     return this.read(async (em) => {
       const r = await em.findOne(WagerTransactionRecord, { providerId, idempotencyKey });
       return r ? transactionMapper.toDomain(r as unknown as TransactionRow) : undefined;
+    });
+  }
+
+  findDuePending(now: Date, limit: number): Promise<Array<{ id: string; walletId: string }>> {
+    return this.read(async (em) => {
+      const rows = await em.find(
+        WagerTransactionRecord,
+        { status: WagerTransactionStatus.PendingReference, nextAttemptAt: { $lte: now } },
+        { fields: ["id", "walletId"], orderBy: { nextAttemptAt: "asc" }, limit },
+      );
+      return rows.map((r) => ({ id: r.id, walletId: r.walletId }));
     });
   }
 

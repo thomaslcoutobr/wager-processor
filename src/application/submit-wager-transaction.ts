@@ -7,6 +7,7 @@ import { RetryableConflictError, TransientError, UniqueViolationError } from "./
 import { outboxFor } from "./event-factory";
 import { payloadHashOf } from "./payload-hash";
 import type { Clock, IdGenerator, Metrics, ReadStore, RequestContext, TransactionalStore, UnitOfWork } from "./ports";
+import { nudgeDependents } from "./resolve-pending-reference";
 import type { SubmitWagerCommand } from "./wager-command";
 
 export type SubmitResult =
@@ -38,7 +39,7 @@ const MAX_CONFLICT_RETRIES = 3;
  *  4. re-read by key OR external id (sees whatever committed while we waited for the lock)
  *  5. reference + "already reversed"  6. WagerSettlement.decide (pure domain)
  *  7. plain INSERT of the transaction 8. wallet UPDATE … WHERE version + ledger INSERT
- *  9. outbox                         10. nudge pending transactions waiting for this one
+ *  9. outbox                         10. nudge pending transactions waiting for this one (final outcomes)
  * 11. COMMIT (deferred triggers re-check balance ↔ ledger)
  * A 23505 aborts the transaction and the whole use case runs once more, so the re-read classifies it.
  */
@@ -173,9 +174,7 @@ export class SubmitWagerTransaction {
     await store.insertOutbox(
       outboxFor({ transaction, wallet, entry, enteredPending: transaction.status === S.PendingReference, ctx, now }, this.ids),
     );
-    if (transaction.status === S.Processed) {
-      await store.nudgePendingReferences(wallet.id, transaction.providerId, transaction.externalTransactionId, now);
-    }
+    await nudgeDependents(store, transaction, now);
     return { type: "decided", transaction, replay: false };
   }
 

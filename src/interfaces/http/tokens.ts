@@ -8,4 +8,5 @@ export const TOKENS = {
   metrics: Symbol("PromMetrics"),
   reconcile: Symbol("ReconcileWallet"),
   lifecycle: Symbol("Lifecycle"),
+  jobs: Symbol("BackgroundJobs"),
 } as const;

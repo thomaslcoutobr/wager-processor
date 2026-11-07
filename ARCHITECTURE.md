@@ -720,7 +720,13 @@ loop a cada PENDING_POLL_MS (500 ms, com jitter), em toda instância:
 - **A cutucada** (passo 10 do [§9](#9-o-use-case-submitwagertransaction-passo-a-passo)): quando a
   referência chega e é processada, as pendências da mesma wallet que apontam para ela ganham
   `next_attempt_at = $now`. O caso comum (a referência chega segundos depois) se resolve no próximo
-  ciclo do worker, e continua existindo **um só** caminho de decisão.
+  ciclo do worker, e continua existindo **um só** caminho de decisão. **[ajuste na fatia 3]** A cutucada
+  também dispara quando a referência termina `REJECTED`, para a reversão dependente falhar logo
+  (`REFERENCE_NOT_PROCESSED`) em vez de esperar o próximo backoff. Vale no caminho principal e no worker,
+  o que resolve cadeias (ROLLBACK de um REFUND que esperava a BET) em ordem.
+- Se o banco recusar a decisão de uma pendência (erro determinístico, que seria bug), o worker grava
+  `FAILED PROCESSING_FAILED` numa transação própria, para não repetir para sempre. Erro transitório deixa a
+  linha intacta e ela volta no próximo ciclo.
 - Várias instâncias podem pegar o mesmo candidato; a segunda espera o lock da wallet, relê, vê que já
   não está pendente e sai. É trabalho perdido, mas correto.
 

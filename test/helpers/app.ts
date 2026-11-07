@@ -1,5 +1,5 @@
 import type { INestApplication } from "@nestjs/common";
-import { createApp } from "../../src/app";
+import { type Container, createApp } from "../../src/app";
 import { type AppConfig, loadConfig } from "../../src/infrastructure/config";
 import { Failpoints } from "../../src/infrastructure/failpoints";
 import type { Clock } from "../../src/application/ports";
@@ -21,6 +21,7 @@ export class TestClock implements Clock {
 
 export interface RunningApp {
   app: INestApplication;
+  container: Container;
   baseUrl: string;
   config: AppConfig;
   failpoints: Failpoints;
@@ -46,11 +47,12 @@ export async function startApp(db: TestDb, opts: StartOptions = {}): Promise<Run
     ...opts.env,
   });
   const failpoints = new Failpoints("", { allowInProduction: false });
-  const app = await createApp(config, { clock: opts.clock, failpoints });
+  const { app, container } = await createApp(config, { clock: opts.clock, failpoints });
   await app.listen(0, "127.0.0.1");
   const address = app.getHttpServer().address() as { port: number };
   return {
     app,
+    container,
     config,
     failpoints,
     baseUrl: `http://127.0.0.1:${address.port}`,

@@ -57,6 +57,8 @@ export interface ReadStore {
   findTransactionByKey(providerId: string, idempotencyKey: string): Promise<WagerTransaction | undefined>;
   /** Newest first; `beforeVersion` excludes that version and everything newer. */
   listLedger(walletId: string, beforeVersion: number | undefined, limit: number): Promise<WalletLedgerEntry[]>;
+  /** Candidates only (no lock): PENDING_REFERENCE rows whose next attempt is due. */
+  findDuePending(now: Date, limit: number): Promise<Array<{ id: string; walletId: string }>>;
 }
 
 export type Source = "http" | "sqs" | "worker" | "internal";
