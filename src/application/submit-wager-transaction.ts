@@ -89,7 +89,12 @@ export class SubmitWagerTransaction {
   }
 
   private async once(command: SubmitWagerCommand, hash: string, ctx: RequestContext, inbox?: InboxRef): Promise<SubmitResult> {
-    // 0. late retries never touch the wallet lock
+    // 0. late retries never touch the wallet lock. On the queue path the inbox answers first:
+    //    a redelivery of the same message is recognized by (consumerName, messageId), as it should.
+    if (inbox) {
+      const seen = await this.read.findInbox(inbox.consumerName, inbox.messageId);
+      if (seen) return seen.matchesPayload(hash) ? { type: "inbox_duplicate" } : { type: "inbox_conflict" };
+    }
     const known = await this.read.findTransactionByKey(command.providerId, command.idempotencyKey);
     if (known) return this.classify([known], command, hash);
 

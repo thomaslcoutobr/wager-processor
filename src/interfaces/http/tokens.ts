@@ -9,4 +9,5 @@ export const TOKENS = {
   reconcile: Symbol("ReconcileWallet"),
   lifecycle: Symbol("Lifecycle"),
   jobs: Symbol("BackgroundJobs"),
+  failpoints: Symbol("Failpoints"),
 } as const;

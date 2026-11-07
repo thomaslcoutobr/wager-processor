@@ -1,9 +1,10 @@
 import { TransientError } from "../application/errors";
 import type { FailpointPort } from "../application/ports";
 
-export type FailpointAction = "crash" | "throw" | "transient";
+export type FailpointAction = "crash" | "throw" | "transient" | `delay:${number}`;
 
 const ACTIONS: ReadonlySet<string> = new Set(["crash", "throw", "transient"]);
+const DELAY = /^delay:(\d{1,6})$/;
 
 export class FailpointError extends Error {
   constructor(name: string) {
@@ -18,6 +19,7 @@ export class FailpointError extends Error {
  *  - crash     → SIGKILL on the own process (exit 137), exactly at that line
  *  - throw     → a non-transient error (bug path)
  *  - transient → a TransientError (retry path)
+ *  - delay:N   → waits N ms (a slow transaction, for the SIGTERM drain tests)
  * The app refuses to start with FAILPOINTS set in production.
  */
 export class Failpoints implements FailpointPort {
@@ -29,7 +31,7 @@ export class Failpoints implements FailpointPort {
     }
     for (const part of spec.split(",").map((s) => s.trim()).filter(Boolean)) {
       const [name, action] = part.split("=");
-      if (!name || !action || !ACTIONS.has(action)) throw new Error(`invalid failpoint "${part}"`);
+      if (!name || !action || !(ACTIONS.has(action) || DELAY.test(action))) throw new Error(`invalid failpoint "${part}"`);
       this.points.set(name, action as FailpointAction);
     }
   }
@@ -49,6 +51,11 @@ export class Failpoints implements FailpointPort {
   async hit(name: string): Promise<void> {
     const action = this.points.get(name);
     if (!action) return;
+    const delay = DELAY.exec(action);
+    if (delay) {
+      await new Promise((r) => setTimeout(r, Number(delay[1])));
+      return;
+    }
     if (action === "crash") {
       process.kill(process.pid, "SIGKILL");
       await new Promise(() => {}); // never continue past a crash point

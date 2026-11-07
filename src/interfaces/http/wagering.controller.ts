@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Headers, Inject, Param, Post, Res, UseGuards } from "@nestjs/common";
-import type { IdGenerator, ReadStore } from "../../application/ports";
+import type { FailpointPort, IdGenerator, ReadStore } from "../../application/ports";
 import { SubmitWagerTransaction } from "../../application/submit-wager-transaction";
 import { parseWagerCommand } from "../../application/wager-command";
 import { ProviderAuthGuard } from "./auth";
@@ -15,6 +15,7 @@ export class WageringController {
     @Inject(TOKENS.submit) private readonly submit: SubmitWagerTransaction,
     @Inject(TOKENS.readStore) private readonly read: ReadStore,
     @Inject(TOKENS.ids) private readonly ids: IdGenerator,
+    @Inject(TOKENS.failpoints) private readonly failpoints: FailpointPort,
   ) {}
 
   @Post("wagering/transactions")
@@ -46,6 +47,7 @@ export class WageringController {
           { transactionId: result.transactionId },
         );
       case "decided": {
+        if (!result.replay) await this.failpoints.hit("http.after_commit_before_response");
         const reply = submitReply(result.transaction, result.replay);
         res.status(reply.status);
         for (const [k, v] of Object.entries(reply.headers)) res.setHeader(k, v);

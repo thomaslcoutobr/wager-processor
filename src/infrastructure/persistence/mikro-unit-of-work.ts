@@ -3,10 +3,10 @@ import type { EntityManager, MikroORM } from "@mikro-orm/postgresql";
 import { InvariantViolationError } from "../../domain/errors";
 import type { InboxMessage } from "../../domain/inbox-message";
 import type { WalletLedgerEntry } from "../../domain/ledger-entry";
-import type { OutboxMessage } from "../../domain/outbox-message";
 import { type WagerTransaction, WagerTransactionStatus } from "../../domain/wager-transaction";
 import type { Wallet } from "../../domain/wallet";
-import type { FailpointPort, Metrics, TransactionalStore, UnitOfWork } from "../../application/ports";
+import type { FailpointPort, Metrics, TransactionalStore, UnitOfWork, UnitOfWorkOptions } from "../../application/ports";
+import { OutboxMessage } from "../../domain/outbox-message";
 import { translateDbError } from "./db-errors";
 import {
   inboxMapper,
@@ -38,12 +38,15 @@ export class MikroUnitOfWork implements UnitOfWork {
     private readonly failpoints: FailpointPort,
   ) {}
 
-  async run<T>(work: (store: TransactionalStore) => Promise<T>): Promise<T> {
+  async run<T>(work: (store: TransactionalStore) => Promise<T>, options: UnitOfWorkOptions = {}): Promise<T> {
     try {
       return await this.orm.em.fork().transactional(async (em) => {
         await em.execute(`set local lock_timeout = '${Math.trunc(this.lockTimeoutMs)}ms'`);
+        if (options.statementTimeoutMs) {
+          await em.execute(`set local statement_timeout = '${Math.trunc(options.statementTimeoutMs)}ms'`);
+        }
         const result = await work(new MikroTransactionalStore(em, this.metrics));
-        await this.failpoints.hit("usecase.before_commit");
+        await this.failpoints.hit(`${options.name ?? "usecase"}.before_commit`);
         return result;
       });
     } catch (err) {
@@ -148,6 +151,39 @@ class MikroTransactionalStore implements TransactionalStore {
   async insertOutbox(messages: OutboxMessage[]): Promise<void> {
     if (messages.length === 0) return;
     await this.em.insertMany(OutboxMessageRecord, messages.map((m) => outboxMapper.toRow(m)));
+  }
+
+  async claimDueOutbox(now: Date, limit: number): Promise<OutboxMessage[]> {
+    // PESSIMISTIC_PARTIAL_WRITE = FOR UPDATE SKIP LOCKED: right for a queue table, wrong for a wallet
+    const rows = await this.em.find(
+      OutboxMessageRecord,
+      { publishedAt: null, nextAttemptAt: { $lte: now } },
+      { lockMode: LockMode.PESSIMISTIC_PARTIAL_WRITE, orderBy: { nextAttemptAt: "asc", id: "asc" }, limit },
+    );
+    return rows.map((r) =>
+      OutboxMessage.rehydrate({
+        id: r.id,
+        aggregateId: r.aggregateId,
+        messageGroupId: r.messageGroupId,
+        eventType: r.eventType,
+        eventVersion: r.eventVersion,
+        payload: r.payload,
+        occurredAt: r.occurredAt,
+        attempts: r.attempts,
+        nextAttemptAt: r.nextAttemptAt,
+        publishedAt: r.publishedAt ?? undefined,
+        lastError: r.lastError ?? undefined,
+      }),
+    );
+  }
+
+  async saveOutboxProgress(message: OutboxMessage): Promise<void> {
+    const row = outboxMapper.toRow(message);
+    await this.em.nativeUpdate(
+      OutboxMessageRecord,
+      { id: message.id },
+      { publishedAt: row.publishedAt, attempts: row.attempts, nextAttemptAt: row.nextAttemptAt, lastError: row.lastError },
+    );
   }
 
   async nudgePendingReferences(walletId: string, providerId: string, externalId: string, now: Date): Promise<number> {

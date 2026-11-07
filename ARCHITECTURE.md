@@ -521,7 +521,10 @@ Entrada: o comando validado, o `payloadHash` e, quando vem da fila, os dados da 
 12. resposta HTTP, ou ack da mensagem
 ```
 
-- O passo 0 tira o lock do caminho dos reenvios tardios.
+- O passo 0 tira o lock do caminho dos reenvios tardios. **[ajuste na fatia 4]** Na fila, o passo 0
+  consulta primeiro a inbox por `(consumer_name, message_id)`: a reentrega da mesma mensagem é reconhecida
+  pela inbox (como o enunciado pede), e a chave só decide quando a mensagem é outra com a mesma operação.
+  O passo 3 continua existindo para as reentregas que chegam ao mesmo tempo.
 - O passo 4 é o que decide nas rajadas, porque roda depois do lock, num statement novo que já enxerga o
   commit anterior **[doc]**.
 - O passo 7 é a garantia final, no schema. Ele é um `INSERT` simples de propósito: um

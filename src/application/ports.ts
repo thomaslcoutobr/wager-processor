@@ -42,11 +42,29 @@ export interface TransactionalStore {
 
   /** Pending transactions of this wallet waiting for (providerId, externalId) become due now. */
   nudgePendingReferences(walletId: string, providerId: string, externalId: string, now: Date): Promise<number>;
+
+  /** SELECT … FOR UPDATE SKIP LOCKED: concurrent publishers get disjoint batches (queue table, never the wallet). */
+  claimDueOutbox(now: Date, limit: number): Promise<OutboxMessage[]>;
+  /** Persists published_at / attempts / next_attempt_at / last_error of a claimed row. */
+  saveOutboxProgress(message: OutboxMessage): Promise<void>;
+}
+
+export interface UnitOfWorkOptions {
+  /** Failpoint prefix: `<name>.before_commit` is hit right before COMMIT (default "usecase"). */
+  name?: string;
+  statementTimeoutMs?: number;
 }
 
 export interface UnitOfWork {
   /** BEGIN (READ COMMITTED) + lock_timeout … COMMIT. Any throw rolls everything back. */
-  run<T>(work: (store: TransactionalStore) => Promise<T>): Promise<T>;
+  run<T>(work: (store: TransactionalStore) => Promise<T>, options?: UnitOfWorkOptions): Promise<T>;
+}
+
+/** Where integration events go (wager-events.fifo). Must be idempotent on the message id. */
+export interface EventBus {
+  publish(message: OutboxMessage): Promise<void>;
+  /** Reachability probe for readiness. */
+  check(): Promise<void>;
 }
 
 /** Reads outside any transaction (each statement sees the latest committed state). */
@@ -59,6 +77,9 @@ export interface ReadStore {
   listLedger(walletId: string, beforeVersion: number | undefined, limit: number): Promise<WalletLedgerEntry[]>;
   /** Candidates only (no lock): PENDING_REFERENCE rows whose next attempt is due. */
   findDuePending(now: Date, limit: number): Promise<Array<{ id: string; walletId: string }>>;
+  findInbox(consumerName: string, messageId: string): Promise<InboxMessage | undefined>;
+  /** Unpublished rows and the age of the oldest one (outbox lag). */
+  outboxStats(now: Date): Promise<{ pending: number; oldestAgeSeconds: number }>;
 }
 
 export type Source = "http" | "sqs" | "worker" | "internal";

@@ -2,7 +2,7 @@ import type { INestApplication } from "@nestjs/common";
 import { type Container, createApp } from "../../src/app";
 import { type AppConfig, loadConfig } from "../../src/infrastructure/config";
 import { Failpoints } from "../../src/infrastructure/failpoints";
-import type { Clock } from "../../src/application/ports";
+import type { Clock, EventBus } from "../../src/application/ports";
 import type { TestDb } from "./test-db";
 
 /** Clock the test can move forward; everything that decides time-based rules reads from it. */
@@ -31,6 +31,7 @@ export interface RunningApp {
 export interface StartOptions {
   env?: Record<string, string>;
   clock?: Clock;
+  wrapEventBus?: (bus: EventBus) => EventBus;
 }
 
 /** Boots the real Nest app in-process against the test database (background roles off unless asked). */
@@ -47,7 +48,7 @@ export async function startApp(db: TestDb, opts: StartOptions = {}): Promise<Run
     ...opts.env,
   });
   const failpoints = new Failpoints("", { allowInProduction: false });
-  const { app, container } = await createApp(config, { clock: opts.clock, failpoints });
+  const { app, container } = await createApp(config, { clock: opts.clock, failpoints, wrapEventBus: opts.wrapEventBus });
   await app.listen(0, "127.0.0.1");
   const address = app.getHttpServer().address() as { port: number };
   return {
