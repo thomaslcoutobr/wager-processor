@@ -1,3 +1,5 @@
+name: wager-processor
+
 services:
   postgres:
     image: postgres:17-alpine
@@ -6,9 +8,56 @@ services:
       POSTGRES_PASSWORD: wager
       POSTGRES_DB: wager
     ports:
-      - "5433:5432"
+      - "${POSTGRES_HOST_PORT:-5433}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U wager -d wager"]
       interval: 2s
       timeout: 3s
       retries: 30
+
+  # SQS emulator. MiniStack (MIT, no auth token). LocalStack works with the same init path
+  # (/etc/localstack/init/ready.d) but has required LOCALSTACK_AUTH_TOKEN since 2026-03-23.
+  aws:
+    image: ${AWS_EMULATOR_IMAGE:-ministackorg/ministack:1.5.38}
+    environment:
+      SERVICES: sqs
+      AWS_DEFAULT_REGION: us-east-1
+      MAX_RECEIVE_COUNT: "5"
+    ports:
+      - "${SQS_HOST_PORT:-4566}:4566"
+    volumes:
+      - ./docker/ministack/ready.d:/etc/localstack/init/ready.d:ro
+    healthcheck:
+      # Healthy only after the ready.d scripts finished, i.e. both FIFO queues exist.
+      test: ["CMD", "python", "-c", "import json,urllib.request,sys; d=json.load(urllib.request.urlopen('http://localhost:4566/_ministack/health')); r=d.get('ready_scripts',{}); sys.exit(0 if r.get('status')=='completed' and not r.get('failed') else 1)"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  app:
+    build: .
+    image: wager-processor:local
+    environment:
+      PORT: "3000"
+      DATABASE_URL: postgres://wager:wager@postgres:5432/wager
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      SQS_ENDPOINT: http://aws:4566
+      SQS_QUEUE_NAME: wager-transactions.fifo
+      SQS_DLQ_NAME: wager-transactions-dlq.fifo
+      SHUTDOWN_GRACE_MS: "8000"
+    ports:
+      - "${APP_HOST_PORT:-3000}:3000"
+    # Must be longer than SHUTDOWN_GRACE_MS so in-flight messages can finish before SIGKILL.
+    stop_grace_period: 20s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      aws:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bun", "-e", "fetch('http://localhost:3000/health/live').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
