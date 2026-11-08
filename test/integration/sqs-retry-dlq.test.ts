@@ -72,3 +72,53 @@ describe("transient failures on the queue path", () => {
     expect(d.n).toBe(1);
   });
 });
+
+describe("a permanent failure on the queue path (the schema refuses what the domain accepted)", () => {
+  it("records FAILED PROCESSING_FAILED, dead-letters the message, and the HTTP replay answers 500 FAILED with retry NEVER", async () => {
+    // simulates a schema/domain disagreement (a bug): the ledger refuses this one amount
+    await db.owner`alter table wallet_ledger_entries add constraint ck_test_refuse check (amount <> 13.13)`;
+    try {
+      const playerId = crypto.randomUUID();
+      const walletId = await createWallet(base, "100.00", playerId);
+      const { key, body } = wagerBody({ walletId, playerId, amount: "13.13" });
+      await sendRaw(queues.urls.main, JSON.stringify(requestedEnvelope({ ...body, idempotencyKey: key })), walletId);
+
+      let dead: Awaited<ReturnType<typeof receiveAll>> = [];
+      await waitFor(async () => {
+        dead = await receiveAll(queues.urls.dlq, { waitS: 1 });
+        return dead.length > 0;
+      }, 20_000);
+      expect(dead[0]!.MessageAttributes?.failureReason?.StringValue).toBe("PROCESSING_FAILED");
+
+      const [tx] = await db.app`select id, status, failure_code from wager_transactions where idempotency_key = ${key}`;
+      expect(tx).toMatchObject({ status: "FAILED", failure_code: "PROCESSING_FAILED" });
+      const events = await db.app`select event_type from outbox_messages where payload->'data'->>'transactionId' = ${tx.id}`;
+      expect(events.map((e: { event_type: string }) => e.event_type)).toEqual(["WagerTransactionFailed"]);
+      expect((await call(base, "GET", `/wallets/${walletId}`)).body.balance.amount).toBe("100.00");
+
+      // the provider asks again over HTTP with the same key: the recorded outcome, never a retry hint
+      const replay = await call(base, "POST", "/wagering/transactions", body, { "Idempotency-Key": key });
+      expect(replay.status).toBe(500);
+      expect(replay.body).toMatchObject({
+        transactionId: tx.id,
+        status: "FAILED",
+        failureCode: "PROCESSING_FAILED",
+        retry: "NEVER",
+        idempotentReplay: true,
+      });
+      const get = await call(base, "GET", `/wagering/transactions/${tx.id}`);
+      expect(get.status).toBe(200);
+      expect(get.body.status).toBe("FAILED");
+
+      // an unexpected error is a different answer: problem+json, INTERNAL_ERROR, nothing recorded
+      const fresh = wagerBody({ walletId, playerId, amount: "13.13" });
+      const bug = await call(base, "POST", "/wagering/transactions", fresh.body, { "Idempotency-Key": fresh.key });
+      expect(bug.status).toBe(500);
+      expect(bug.body.code).toBe("INTERNAL_ERROR");
+      const [n] = await db.app`select count(*)::int as n from wager_transactions where idempotency_key = ${fresh.key}`;
+      expect(n.n).toBe(0);
+    } finally {
+      await db.owner`alter table wallet_ledger_entries drop constraint ck_test_refuse`;
+    }
+  });
+});
