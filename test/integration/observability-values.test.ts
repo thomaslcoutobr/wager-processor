@@ -94,6 +94,13 @@ describe("queue path logs", () => {
     const env = requestedEnvelope({ ...body, idempotencyKey: key });
     await sendRaw(queues.urls.main, JSON.stringify(env), w.walletId);
     await waitFor(async () => (await call(app.baseUrl, "GET", `/wallets/${w.walletId}`)).body.balance.amount === "94.00", 10_000);
+    // a message applied with success leaves one line naming the logical message and the transaction
+    const okLine = await app.waitForLine(new RegExp(`"msg":"message processed".*"messageId":"${env.messageId}"|"messageId":"${env.messageId}".*"msg":"message processed"`));
+    const ok = JSON.parse(okLine);
+    expect(ok).toMatchObject({ messageId: env.messageId, walletId: w.walletId, providerId: "provider-a", outcome: "committed" });
+    expect(typeof ok.transactionId).toBe("string");
+    expect(typeof ok.sqsMessageId).toBe("string");
+    expect(typeof ok.durationMs).toBe("number");
     // redelivery of the same envelope: answered by the inbox, and that line names the messageId
     await sendRaw(queues.urls.main, JSON.stringify(env), w.walletId);
     const dupLine = await app.waitForLine(new RegExp(`"msg":"inbox duplicate".*"messageId":"${env.messageId}"|"messageId":"${env.messageId}".*"msg":"inbox duplicate"`));

@@ -967,7 +967,9 @@ Pontos previstos: `consumer.after_commit_before_ack`, `http.after_commit_before_
 - **Logs:** pino em JSON no stdout, com `correlationId`, `messageId`, `transactionId`,
   `walletId` e `providerId` injetados de um `AsyncLocalStorage` em toda linha (o use case enriquece o
   contexto ao descobrir os ids). `redact` em `authorization` e `cookie`; o log de requisição fica
-  reduzido a método, rota, status e duração. Nunca loga body nem valor financeiro completo (testado em
+  reduzido a método, rota, status e duração. Na fila, cada mensagem aplicada deixa uma linha
+  `message processed` com `messageId`, `sqsMessageId`, `transactionId`, desfecho e duração (o par da
+  linha `request` do HTTP); duplicata, retry e DLQ têm linhas próprias. Nunca loga body nem valor financeiro completo (testado em
   `test/integration/observability.test.ts`). **[implementação]** Usei o pino direto, sem `nestjs-pino`,
   porque o mesmo logger serve HTTP, fila e workers; a escrita é síncrona, para a linha logada logo
   antes de um `process.exit` ou de uma queda não se perder.

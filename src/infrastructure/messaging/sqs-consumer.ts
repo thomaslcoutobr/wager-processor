@@ -241,6 +241,7 @@ export class SqsConsumer implements BackgroundJob {
     const receiveCount = Number(msg.Attributes?.ApproximateReceiveCount ?? "1");
     this.held.set(sqsId, receipt);
     const fields: Record<string, unknown> = { receiveCount };
+    const started = performance.now();
     try {
       this.log("info", "processing message", fields);
       let outcome: MessageOutcome;
@@ -260,6 +261,10 @@ export class SqsConsumer implements BackgroundJob {
         } catch (err) {
           // the effect is committed; the message will come back and the inbox will absorb it
           this.log("warn", "delete after commit failed; redelivery will be deduplicated", { ...fields, err: String(err) });
+        }
+        // the queue twin of the HTTP "request" line: messageId and transactionId come from the log context
+        if (outcome.note !== "inbox_duplicate") {
+          this.log("info", "message processed", { ...fields, outcome: outcome.note, durationMs: Math.round(performance.now() - started) });
         }
         return;
       }
