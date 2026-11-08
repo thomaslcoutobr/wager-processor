@@ -30,7 +30,7 @@
 | HTTP | 200 PROCESSED · **422 REJECTED** · 202 PENDING_REFERENCE · 400 · 404 · 409 · 503 + `Retry-After` | As 5 situações da seção 9 têm códigos distintos; o provedor decide reenviar só pelo código, e o corpo traz `status`, `failureCode` e `retry`. |
 | Fila | **MiniStack** (SQS FIFO + DLQ), imagem trocável por `AWS_EMULATOR_IMAGE` | O LocalStack exige token desde 23/03/2026; sem token o container sai com código 55 **[medido]**. |
 | Consumidor SQS | Próprio (`sqs-consumer.ts`, ~300 linhas), inbox por `(consumer_name, message_id)`, ack só depois do commit, 3 classes de erro, DLQ com motivo | As decisões que o enunciado avalia ficam visíveis no código. |
-| Outbox | Linha gravada na mesma transação; publishers concorrentes com `FOR UPDATE SKIP LOCKED`; `MessageDeduplicationId = eventId` | Pelo menos uma vez, de propósito; o consumidor dos eventos deduplica por `eventId`. |
+| Outbox | Linha gravada na mesma transação; publishers concorrentes com `FOR UPDATE SKIP LOCKED`; ordem por wallet pela coluna `seq`, sorteada sob o lock da wallet; `MessageDeduplicationId = eventId` | Pelo menos uma vez, de propósito; o consumidor dos eventos deduplica por `eventId`. A ordem não depende do relógio das instâncias. |
 | Referência fora de ordem | `PENDING_REFERENCE` + worker com backoff exponencial e **TTL de 10 min** (configurável) | Ver [§14](#14-worker-de-pending_reference). |
 | Autenticação | **Não implementada.** Ponto de extensão `ProviderIdentityPort` + `AuthGuard` no-op | Vale 0 pontos; o desenho com Keycloak está em [§18](#18-autenticação-ponto-de-extensão). |
 | Testes | `bun test` contra Postgres e MiniStack reais; 3 processos com `Bun.spawn`; failpoints que fazem SIGKILL no próprio processo | Sem mocks de banco ou fila nos testes de integração e concorrência. |
@@ -72,11 +72,12 @@ src/
                     FailureCode, erros de domínio. Sem import de @nestjs nem de @mikro-orm.
   application/      use cases (SubmitWagerTransaction, CreateWallet, ResolvePendingReference,
                     ReconcileWallet, PublishOutboxBatch, consultas), payloadHash e as portas:
-                    UnitOfWork, TransactionalStore, Clock, IdGenerator, EventBus, ProviderIdentityPort.
+                    UnitOfWork, TransactionalStore, Clock, IdGenerator, EventBus.
   infrastructure/   persistence/ (schemas defineEntity, *Record, mappers, migrations em SQL cru,
                     MikroUnitOfWork), messaging/ (cliente SQS, consumidor, publisher),
                     observability/ (pino, prom-client, AsyncLocalStorage), workers/, config, failpoint.
-  interfaces/http/  controllers, validação de entrada, mapa de status, problem+json, AuthGuard.
+  interfaces/http/  controllers, validação de entrada, mapa de status, problem+json e a autenticação
+                    (ProviderIdentityPort + ProviderAuthGuard, ponto de extensão da §18).
 test/unit · test/integration · test/concurrency · test/helpers
 ```
 
@@ -274,11 +275,16 @@ Migrations em SQL escrito à mão (`migration:create --blank`), com `up` e `down
 `up → down → up`. Nada de `schema:update` nem de diff automático: o schema tem `CHECK`, trigger e
 índice parcial que o diff dos metadados não entende **[medido na pesquisa]**.
 
-São duas migrations, e o SQL desta seção mostra o resultado das duas juntas:
+São quatro migrations, e o SQL desta seção mostra o resultado de todas juntas. Migration aplicada não
+se edita: cada mudança de schema depois da primeira entrou numa migration nova, com `up` e `down`.
 - `Migration20261107000100_schema`: o schema da F3;
 - `Migration20261108000100_review_hardening`: o que a revisão da F4 endureceu (`result_currency` com
   backfill a partir da wallet, CHECKs contra `NaN`, o `ledger_entry_is_backed` mais estrito e o
-  `wallet_guard`).
+  `wallet_guard`);
+- `Migration20261108000200_trigger_integrity`: a 2ª rodada da revisão (`OPENING` só na wallet que abre,
+  `search_path` fixo nos triggers, FK de `result_currency`; [§6.5](#65-o-laço-saldo--ledger-no-banco));
+- `Migration20261108000300_outbox_sequence`: a coluna `seq` da outbox, que dá a ordem por wallet
+  ([§13](#13-outbox-publisher)).
 
 Migration aplicada não se edita, nem em projeto novo: a 1ª versão destes consertos mexeu na migration
 inicial, e o banco do compose, que já a tinha aplicado, ficou sem a coluna nova (500 na criação de
@@ -461,9 +467,12 @@ temporária e o trigger lia a tabela falsa. Agora são duas barreiras, cada uma 
 **[medido na fatia 2]** `test/integration/schema.test.ts` prova que um `UPDATE` de saldo sem lançamento,
 um lançamento sem `UPDATE`, um lançamento de transação `REJECTED` e um lançamento com `balance_before`
 errado falham no commit. Custo na wallet quente (`bun run bench:triggers`, dentro do compose: 300 apostas
-concorrentes de 1,00 numa wallet, pool de 10, 3 rodadas alternando ligado/desligado): mediana de 1.804 ms
-ligado contra 1.713 ms desligado, cerca de **5% a mais** (166 contra 175 operações por segundo). A medida
-é ruidosa e vale só a razão. Com esse custo, os triggers ficam ligados.
+concorrentes de 1,00 numa wallet, pool de 10, 3 rodadas alternando ligado/desligado). Na fatia 2: mediana
+de 1.804 ms ligado contra 1.713 ms desligado, cerca de **5% a mais** (166 contra 175 operações por
+segundo). **Medido de novo em 08/11, no código final** (com os triggers da 2ª rodada): mediana de 1.742 ms
+ligado contra 1.735 ms desligado, 0,5% a mais (172 contra 173 por segundo). As rodadas variam mais do que
+isso (de 1.554 a 1.971 ms), então o custo dos triggers fica dentro do ruído desta medida: o que dá para
+afirmar é "até uns 5%", não um número exato. Com esse custo, os triggers ficam ligados.
 
 ### 6.6 inbox_messages e outbox_messages
 
@@ -971,7 +980,7 @@ SELECT w.balance, w.currency,
 
 Mais uma checagem de cadeia (`balance_before` = `balance_after` do lançamento anterior, por
 `wallet_version`), que pega um buraco que a soma sozinha esconderia. Divergência **não é corrigida**: vai
-para log de erro (ids e valores, sem payload), para a métrica `reconciliation_divergence_total` e para a
+para log de erro (só o `walletId`, se o saldo diverge e quantas quebras de cadeia; valores e payload não vão para o log), para a métrica `reconciliation_divergence_total` e para a
 resposta (`consistent: false`, `difference` e o campo extra `chainBreaks`). Todos os testes de
 integração e concorrência terminam rodando essa reconciliação em cada wallet usada.
 
@@ -1024,8 +1033,10 @@ Pontos previstos: `consumer.after_commit_before_ack`, `http.after_commit_before_
 | latência | `wager_processing_seconds{source}` (histograma) |
 | extras | `pending_reference_total`, `reconciliation_divergence_total` |
 
-- **Health:** `live` responde se o processo está de pé; `ready` faz `SELECT 1` no Postgres e
-  `GetQueueAttributes` nas filas, com timeout de 1 s cada, e responde 503 durante o desligamento.
+- **Health:** `live` responde se o processo está de pé; `ready` confere que o Postgres responde e escreve
+  (`transaction_read_only = off`) e faz
+  `GetQueueAttributes` nas filas, com timeout de 1 s cada, e responde 503 durante o desligamento. Por
+  ser aberto, o corpo traz só `ok`/`fail` por dependência; a mensagem do erro vai para o log.
 
 ---
 
@@ -1126,6 +1137,19 @@ Como os testes ficam determinísticos:
 - dados novos por teste (wallet e player com UUID novo);
 - os testes de corrida rodam em laço (20 vezes) antes da entrega; um flake é bug do produto.
 
+**Medido no código entregue (08/11/2026):**
+- suíte inteira: 353 testes em 47 arquivos, todos verdes, 153 s, dentro do Docker, com `tsc` estrito antes;
+- laço: `test/concurrency` (35 testes) rodou 20 vezes seguidas no commit 5b72b37, 20 de 20 verdes, de 43
+  a 49 s por rodada;
+- **teste de mutação** (`scripts/mutation.py`): planta um bug de cada vez numa CÓPIA de `src/` (sem lock
+  na wallet, débito sem saldo, inbox ignorada, ack no retry, outbox sem `SKIP LOCKED`, ledger aceitando
+  `UPDATE`, 503 sem `Retry-After`...), roda a suíte inteira e confere se algum teste fica vermelho. Um
+  mutante que sobrevive aponta uma regra sem teste. Resultado em `scripts/mutation-result.json`:
+  **20 de 20 mutantes derrubados** no commit 5b72b37, nenhum sobreviveu (cerca de 2,5 min por
+  mutante, ~55 min a rodada). Exemplos: sem o lock da wallet, 14 testes ficam vermelhos (entre eles o
+  100/80/80); com o ledger aceitando `UPDATE`, o teste de schema pega. Depois desse commit só houve
+  mudança de legibilidade (nomes e comentários), com a suíte inteira verde de novo.
+
 Diferencial opcional (`bun run test:load`): ver a situação em [§20](#20-limitações-conhecidas-e-trade-offs).
 
 **README** (vale pontos na documentação): pré-requisitos (Docker; o Bun só se for rodar fora do
@@ -1197,6 +1221,12 @@ a regra de reenvio para o provedor ([§10.2](#102-mapa-de-status)); as variávei
   `/health/ready`, que é aberto, devolve só `ok`/`fail` por dependência (a mensagem do erro vai para o
   log). Não há rate limit nem conferência de `Content-Type`: isso fica no gateway.
 - **Ledger e outbox crescem sem poda.** Arquivamento e particionamento estão fora do escopo.
+- **A outbox não tem teto de tentativas.** Um evento que o SQS recuse para sempre fica tentando a cada
+  até 5 min e segura os eventos seguintes da mesma wallet, porque a ordem por wallet exige isso. O
+  dinheiro não é afetado (o evento só sai depois do commit), e os eventos são pequenos e de formato fixo,
+  então uma recusa permanente é improvável. O sinal é o `outbox_lag_seconds` subindo. Em produção:
+  teto de tentativas, alerta no lag e uma tabela de quarentena para o evento parado, com reenvio manual.
+  A `wager-events-dlq.fifo` é a DLQ de quem **consome** os eventos, não do publisher.
 - **`PENDING` não é gravado** ([§4.3](#43-wagertransaction-e-estados)). Se um dia o aceite virar
   assíncrono (202 e depois o processamento), o schema já aceita o estado.
 - **Esgotar as tentativas transitórias não grava nada**: a mensagem fica só na DLQ até o redrive. O

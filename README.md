@@ -52,7 +52,7 @@ docker compose --profile test run --rm tests
 
 Roda o `tsc` em modo estrito e depois a suíte inteira (unidade, integração e concorrência) dentro do
 Linux, contra o Postgres e o MiniStack reais do compose. Não há mock de banco nem de fila. Cada arquivo
-de teste cria e apaga o próprio banco. No meu PC a suíte leva cerca de 2 min e meio (medido em 08/11: 350 testes em 148 s).
+de teste cria e apaga o próprio banco. No meu PC a suíte leva cerca de 2 min e meio (medido em 08/11: 353 testes em 153 s).
 
 Um arquivo só:
 
@@ -62,6 +62,10 @@ docker compose --profile test run --rm tests bun test test/concurrency/hot-walle
 
 A imagem de teste copia o código no build. Depois de mudar o código, rode
 `docker compose --profile test build tests` antes.
+
+Teste de mutação (opcional, cerca de 1 hora; precisa de Python 3 no host): `python scripts/mutation.py`.
+Ele planta 20 bugs, um de cada vez, numa cópia de `src/` e confere se a suíte pega cada um. O resultado
+da última rodada está em `scripts/mutation-result.json` (ARCHITECTURE §19).
 
 Benchmarks (opcionais), no container de teste:
 
@@ -190,8 +194,9 @@ reenvia é o replay de uma transação `FAILED`, que traz `retry: "NEVER"` (ARCH
 
 ## Logs e métricas
 
-- **Logs:** JSON (pino) no stdout, em `docker compose logs -f app`. Toda linha de uma requisição ou
-  mensagem traz o `correlationId` (header `X-Correlation-Id`, aceito ou gerado) e, quando houver,
+- **Logs:** JSON (pino) no stdout, em `docker compose logs -f app`. Toda linha de uma requisição, e toda
+  linha de uma mensagem depois de lido o envelope, traz o `correlationId` (header `X-Correlation-Id`, aceito
+  ou gerado; a primeira linha da mensagem, "processing message", só tem o `sqsMessageId`) e, quando houver,
   `messageId`, `transactionId`, `walletId` e `providerId`. O corpo da requisição e os valores não vão
   para o log.
 - **Métricas:** `GET /metrics` (Prometheus). As principais:
@@ -214,3 +219,7 @@ src/infrastructure   MikroORM (schemas, mappers, migration em SQL), SQS (consumi
 src/interfaces/http  controllers NestJS, mapa de status e problem+json
 test/                unit, integration e concurrency
 ```
+
+Nos comentários do código aparecem códigos como `R1-05`, `Lb-02` ou `R2b-01`. São achados da revisão
+interna feita depois da implementação, cada um com um teste que ficava vermelho antes do conserto; o
+texto ao lado do código diz o que mudou, e a ARCHITECTURE explica cada um no trecho correspondente.

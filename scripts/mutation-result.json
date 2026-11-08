@@ -1,0 +1,337 @@
+{
+  "commit": "5b72b37",
+  "results": [
+    {
+      "mutant": "M01 no pessimistic lock on the wallet",
+      "killed": true,
+      "pass": 339,
+      "fail": 14,
+      "timed_out": false,
+      "seconds": 154,
+      "failed_tests": [
+        "(fail) HTTP burst on one hot wallet bigger than the pool (L-01) > another wallet and /health/ready answer within the timeouts, never 500, and all recover after the lock [2228.52ms]",
+        "(fail) section 8 scenario: 100.00 and two simultaneous bets of 80.00 > one PROCESSED, one REJECTED INSUFFICIENT_FUNDS, balance 20.00, one debit (20 rounds) [51.73ms]",
+        "(fail) section 8 scenario: 100.00 and two simultaneous bets of 80.00 > holds even when both requests are forced to wait on the same row lock [54.47ms]",
+        "(fail) section 8 scenario: 100.00 and two simultaneous bets of 80.00 > retrying both requests does not duplicate the debit [37.40ms]",
+        "(fail) different wallets in parallel > 20 wallets × 6 concurrent operations each end exactly where they should [631.25ms]",
+        "(fail) three application processes at the same time (section 13, test 4) > 100.00 vs two bets of 80.00 on two different instances: one debit (20 rounds) [129.44ms]",
+        "(fail) three application processes at the same time (section 13, test 4) > a distributed burst over HTTP and SQS on shared wallets keeps every invariant [725.81ms]",
+        "(fail) REFUND/ROLLBACK delivered before their reference (section 13, test 7) > reversal and reference racing: the reversal is applied exactly once (10 rounds) [62.63ms]",
+        "(fail) pending worker under a busy wallet > backs the busy candidates off, so a due reversal of another wallet is applied in the next pass [257.03ms]",
+        "(fail) restarts in the middle of the traffic (section 13, test 8) > SIGKILL one instance, SIGTERM another, start a new one: final state is consistent and nothing is lost or doubled [6520.73ms]",
+        "(fail) time of a decision (R1-05) > is read after the wallet lock, so ledger time never runs behind wallet_version [78.72ms]",
+        "(fail) outbox publisher > 3 concurrent publishers over 300 events: every row published exactly once, none left behind [331.39ms]"
+      ]
+    },
+    {
+      "mutant": "M02 domain debits without funds",
+      "killed": true,
+      "pass": 335,
+      "fail": 18,
+      "timed_out": false,
+      "seconds": 157,
+      "failed_tests": [
+        "(fail) section 8 scenario: 100.00 and two simultaneous bets of 80.00 > one PROCESSED, one REJECTED INSUFFICIENT_FUNDS, balance 20.00, one debit (20 rounds) [54.59ms]",
+        "(fail) section 8 scenario: 100.00 and two simultaneous bets of 80.00 > holds even when both requests are forced to wait on the same row lock [60.60ms]",
+        "(fail) section 8 scenario: 100.00 and two simultaneous bets of 80.00 > retrying both requests does not duplicate the debit [36.25ms]",
+        "(fail) three application processes at the same time (section 13, test 4) > 100.00 vs two bets of 80.00 on two different instances: one debit (20 rounds) [134.95ms]",
+        "(fail) three application processes at the same time (section 13, test 4) > a distributed burst over HTTP and SQS on shared wallets keeps every invariant [857.65ms]",
+        "(fail) REFUND/ROLLBACK delivered before their reference (section 13, test 7) > a pending reversal of a BET that ends REJECTED is rejected as REFERENCE_NOT_PROCESSED [15.24ms]",
+        "(fail) metric values follow the outcomes > wager_transactions_total counts by status/kind/source and wager_processing_seconds counts every submission [100.34ms]",
+        "(fail) REFUND > of a REJECTED bet is 422 REFERENCE_NOT_PROCESSED [11.01ms]",
+        "(fail) ROLLBACK > that would make the balance negative is 422 REVERSAL_INSUFFICIENT_FUNDS and stays auditable [31.10ms]",
+        "(fail) SQS consumer > a business rejection is terminal: recorded REJECTED and acked (not DLQ) [10021.51ms]",
+        "(fail) SQS consumer > permanent errors go to the DLQ with the reason: invalid JSON, unknown type, invalid payload, unknown wallet, messageId reused [112.00ms]",
+        "(fail) POST /wagering/transactions > insufficient funds is a 422 REJECTED, recorded, with no ledger entry; the replay is 422 too [9.45ms]"
+      ]
+    },
+    {
+      "mutant": "M03 inbox ignored (fast path and in the transaction)",
+      "killed": true,
+      "pass": 349,
+      "fail": 4,
+      "timed_out": false,
+      "seconds": 186,
+      "failed_tests": [
+        "(fail) process killed after COMMIT and before the SQS ack (section 13, test 5) > the effect is kept, the message comes back, the inbox absorbs it: one debit [18118.25ms]",
+        "(fail) queue path logs > carry the SQS message id and, once the envelope is read, its messageId; the counters move with source sqs [15136.95ms]",
+        "(fail) SQS consumer > a redelivered message (same messageId, new SQS dedup id) is acked by the inbox without a second effect [201.90ms]",
+        "(fail) SQS consumer > permanent errors go to the DLQ with the reason: invalid JSON, unknown type, invalid payload, unknown wallet, messageId reused [10486.98ms]",
+        "(fail) process killed after COMMIT and before the SQS ack (section 13, test 5) > the effect is kept, the message comes back, the inbox absorbs it: one debit [18118.25ms]",
+        "(fail) queue path logs > carry the SQS message id and, once the envelope is read, its messageId; the counters move with source sqs [15136.95ms]",
+        "(fail) SQS consumer > a redelivered message (same messageId, new SQS dedup id) is acked by the inbox without a second effect [201.90ms]",
+        "(fail) SQS consumer > permanent errors go to the DLQ with the reason: invalid JSON, unknown type, invalid payload, unknown wallet, messageId reused [10486.98ms]"
+      ]
+    },
+    {
+      "mutant": "M04 different payload hash becomes a replay",
+      "killed": true,
+      "pass": 351,
+      "fail": 2,
+      "timed_out": false,
+      "seconds": 145,
+      "failed_tests": [
+        "(fail) the same bet sent 50 times in parallel > same key racing on two different wallets: one applies, the other is a 409 (never a 500) [21.67ms]",
+        "(fail) POST /wagering/transactions > same key with a different payload is a 409 conflict, never a replay [14.44ms]",
+        "(fail) the same bet sent 50 times in parallel > same key racing on two different wallets: one applies, the other is a 409 (never a 500) [21.67ms]",
+        "(fail) POST /wagering/transactions > same key with a different payload is a 409 conflict, never a replay [14.44ms]"
+      ]
+    },
+    {
+      "mutant": "M05 domain skips ALREADY_REVERSED",
+      "killed": true,
+      "pass": 349,
+      "fail": 4,
+      "timed_out": false,
+      "seconds": 147,
+      "failed_tests": [
+        "(fail) a transaction is reversed at most once > a second reversal of any kind is 422 ALREADY_REVERSED [27.62ms]",
+        "(fail) a transaction is reversed at most once > 10 different reversals of the same BET racing: exactly one credit (5 rounds) [89.01ms]",
+        "(fail) REFUND > of an already reversed BET is ALREADY_REVERSED [1.94ms]",
+        "(fail) ROLLBACK > of an already reversed transaction is ALREADY_REVERSED (at most one reversal of any kind) [1.59ms]",
+        "(fail) a transaction is reversed at most once > a second reversal of any kind is 422 ALREADY_REVERSED [27.62ms]",
+        "(fail) a transaction is reversed at most once > 10 different reversals of the same BET racing: exactly one credit (5 rounds) [89.01ms]",
+        "(fail) REFUND > of an already reversed BET is ALREADY_REVERSED [1.94ms]",
+        "(fail) ROLLBACK > of an already reversed transaction is ALREADY_REVERSED (at most one reversal of any kind) [1.59ms]"
+      ]
+    },
+    {
+      "mutant": "M06 schema without CHECK balance >= 0",
+      "killed": true,
+      "pass": 352,
+      "fail": 1,
+      "timed_out": false,
+      "seconds": 147,
+      "failed_tests": [
+        "(fail) wallets > balance can never be negative (CHECK) [25.27ms]",
+        "(fail) wallets > balance can never be negative (CHECK) [25.27ms]"
+      ]
+    },
+    {
+      "mutant": "M07 ledger accepts UPDATE (trigger only on DELETE)",
+      "killed": true,
+      "pass": 352,
+      "fail": 1,
+      "timed_out": false,
+      "seconds": 145,
+      "failed_tests": [
+        "(fail) ledger is append-only > even the owner is stopped by the triggers (UPDATE, DELETE and TRUNCATE) [19.74ms]",
+        "(fail) ledger is append-only > even the owner is stopped by the triggers (UPDATE, DELETE and TRUNCATE) [19.74ms]"
+      ]
+    },
+    {
+      "mutant": "M08 consumer acks on retry",
+      "killed": true,
+      "pass": 345,
+      "fail": 8,
+      "timed_out": false,
+      "seconds": 184,
+      "failed_tests": [
+        "(fail) SQS consumer: one message per receive > R1-01: a head that fails transiently up to the DLQ does not drag the followers of its group there [2511.32ms]",
+        "(fail) one database transaction per decision > queue: the same failure also rolls back the inbox row, so the redelivery is processed (not taken as a duplicate) [10015.29ms]",
+        "(fail) Postgres outage on the queue path > a message received while the database is down for 20 s is applied once it is back, not dead-lettered [20039.16ms]",
+        "(fail) Postgres that reads but refuses writes > pauses the consumer, answers 503 on HTTP, keeps the message out of the DLQ and applies it when writes return [15065.12ms]",
+        "(fail) consumer retry backoff (Ld-06) > after a transient failure the message stays invisible for the backoff, then is applied once [15040.03ms]",
+        "(fail) transient failures on the queue path > are retried with backoff and, at the 5th receive, go to the DLQ as RETRY_LIMIT_EXCEEDED without recording anything; a redrive later applies once [30766.40ms]",
+        "(fail) transient failures on the queue path > a failure that clears before the limit is applied once, after retries [17.66ms]",
+        "(fail) a permanent failure on the queue path (the schema refuses what the domain accepted) > records FAILED PROCESSING_FAILED, dead-letters the message, and the HTTP replay answers 500 FAILED with retry NEVER [18.37ms]",
+        "(fail) SQS consumer: one message per receive > R1-01: a head that fails transiently up to the DLQ does not drag the followers of its group there [2511.32ms]",
+        "(fail) one database transaction per decision > queue: the same failure also rolls back the inbox row, so the redelivery is processed (not taken as a duplicate) [10015.29ms]",
+        "(fail) Postgres outage on the queue path > a message received while the database is down for 20 s is applied once it is back, not dead-lettered [20039.16ms]",
+        "(fail) Postgres that reads but refuses writes > pauses the consumer, answers 503 on HTTP, keeps the message out of the DLQ and applies it when writes return [15065.12ms]"
+      ]
+    },
+    {
+      "mutant": "M09 outbox never marks published",
+      "killed": true,
+      "pass": 341,
+      "fail": 12,
+      "timed_out": false,
+      "seconds": 543,
+      "failed_tests": [
+        "(fail) three application processes at the same time (section 13, test 4) > a distributed burst over HTTP and SQS on shared wallets keeps every invariant [30922.52ms]",
+        "(fail) two publishers over the same outbox, one dies mid-batch (section 11 + section 13, test 6) > commit → crash before publishing → another instance publishes → the consumer applies each event once [22073.59ms]",
+        "(fail) restarts in the middle of the traffic (section 13, test 8) > SIGKILL one instance, SIGTERM another, start a new one: final state is consistent and nothing is lost or doubled [36889.80ms]",
+        "(fail) per-wallet event order across instances with different clocks > an instance 5 ms behind decides the next BET: the events still leave as versions 1, 2, 3 [213.68ms]",
+        "(fail) per-wallet event order across instances with different clocks > control: the same clock on both instances gives 1, 2, 3 [202.25ms]",
+        "(fail) outbox per-wallet order > after the head of a wallet fails, no later event of that wallet is published before it [410.03ms]",
+        "(fail) outbox per-wallet order > while one publisher holds the head of a wallet, another one publishes none of its later events [60000.44ms]",
+        "(fail) a pass of the outbox publisher is bounded in time > with a slow SQS, the pass stops at its time budget and the rest goes in the next pass [745.83ms]",
+        "(fail) a pass of the outbox publisher is bounded in time > with SQS failing, the pass stops at the first failure instead of trying every group [120000.09ms]",
+        "(fail) outbox publisher > publishes committed events to wager-events.fifo grouped by wallet, deduplicated by eventId [84.11ms]",
+        "(fail) outbox publisher > 3 concurrent publishers over 300 events: every row published exactly once, none left behind [120000.07ms]",
+        "(fail) SIGTERM > with an outbox backlog, the publisher stops after the batch in flight and the exit code is 0 [22517.19ms]"
+      ]
+    },
+    {
+      "mutant": "M10 outbox without SKIP LOCKED",
+      "killed": true,
+      "pass": 352,
+      "fail": 1,
+      "timed_out": false,
+      "seconds": 153,
+      "failed_tests": [
+        "(fail) outbox per-wallet order > while one publisher holds the head of a wallet, another one publishes none of its later events [5032.37ms]",
+        "(fail) outbox per-wallet order > while one publisher holds the head of a wallet, another one publishes none of its later events [5032.37ms]"
+      ]
+    },
+    {
+      "mutant": "M11 reconciliation always consistent",
+      "killed": true,
+      "pass": 351,
+      "fail": 2,
+      "timed_out": false,
+      "seconds": 147,
+      "failed_tests": [
+        "(fail) reconciliation divergence log (Ld-02) > is an error line with the wallet id and the chain breaks, and carries no amount [7.26ms]",
+        "(fail) POST /wallets/:id/reconciliation > a divergence made by a privileged role is reported (never fixed), logged and counted [20.63ms]",
+        "(fail) reconciliation divergence log (Ld-02) > is an error line with the wallet id and the chain breaks, and carries no amount [7.26ms]",
+        "(fail) POST /wallets/:id/reconciliation > a divergence made by a privileged role is reported (never fixed), logged and counted [20.63ms]"
+      ]
+    },
+    {
+      "mutant": "M12 pending TTL never expires",
+      "killed": true,
+      "pass": 350,
+      "fail": 3,
+      "timed_out": false,
+      "seconds": 158,
+      "failed_tests": [
+        "(fail) REFUND/ROLLBACK delivered before their reference (section 13, test 7) > is REJECTED REFERENCE_NOT_FOUND with an event once the TTL expires [39.38ms]",
+        "(fail) references out of order (PENDING_REFERENCE) > deadline reached with the reference missing → REJECTED REFERENCE_NOT_FOUND [2.66ms]",
+        "(fail) references out of order (PENDING_REFERENCE) > deadline reached with the reference still pending → REJECTED REFERENCE_NOT_PROCESSED [2.04ms]",
+        "(fail) REFUND/ROLLBACK delivered before their reference (section 13, test 7) > is REJECTED REFERENCE_NOT_FOUND with an event once the TTL expires [39.38ms]",
+        "(fail) references out of order (PENDING_REFERENCE) > deadline reached with the reference missing → REJECTED REFERENCE_NOT_FOUND [2.66ms]",
+        "(fail) references out of order (PENDING_REFERENCE) > deadline reached with the reference still pending → REJECTED REFERENCE_NOT_PROCESSED [2.04ms]"
+      ]
+    },
+    {
+      "mutant": "M13 Money accepts 3 decimals",
+      "killed": true,
+      "pass": 351,
+      "fail": 2,
+      "timed_out": false,
+      "seconds": 151,
+      "failed_tests": [
+        "(fail) Money.from: rejected input (never rounded, never coerced) > rejects three decimals (would be silent rounding) [1.69ms]",
+        "(fail) parseWagerCommand (input validation, shared by HTTP and SQS) > amount with 3 decimals → %s [1.49ms]",
+        "(fail) Money.from: rejected input (never rounded, never coerced) > rejects three decimals (would be silent rounding) [1.69ms]",
+        "(fail) parseWagerCommand (input validation, shared by HTTP and SQS) > amount with 3 decimals → %s [1.49ms]"
+      ]
+    },
+    {
+      "mutant": "M14 503 without Retry-After",
+      "killed": true,
+      "pass": 350,
+      "fail": 3,
+      "timed_out": false,
+      "seconds": 151,
+      "failed_tests": [
+        "(fail) HTTP burst on one hot wallet bigger than the pool (L-01) > another wallet and /health/ready answer within the timeouts, never 500, and all recover after the lock [2363.26ms]",
+        "(fail) lock timeout is transient > a wallet locked longer than lock_timeout gives 503 + Retry-After and records nothing [351.17ms]",
+        "(fail) atomicity and transient failures > a transient failure is a 503 with Retry-After and nothing recorded [11.51ms]",
+        "(fail) HTTP burst on one hot wallet bigger than the pool (L-01) > another wallet and /health/ready answer within the timeouts, never 500, and all recover after the lock [2363.26ms]",
+        "(fail) lock timeout is transient > a wallet locked longer than lock_timeout gives 503 + Retry-After and records nothing [351.17ms]",
+        "(fail) atomicity and transient failures > a transient failure is a 503 with Retry-After and nothing recorded [11.51ms]"
+      ]
+    },
+    {
+      "mutant": "M15 no lock_timeout",
+      "killed": true,
+      "pass": 347,
+      "fail": 6,
+      "timed_out": false,
+      "seconds": 336,
+      "failed_tests": [
+        "(fail) lock timeout is transient > a wallet locked longer than lock_timeout gives 503 + Retry-After and records nothing [30048.91ms]",
+        "(fail) two publishers over the same outbox, one dies mid-batch (section 11 + section 13, test 6) > commit → crash before publishing → another instance publishes → the consumer applies each event once [1918.08ms]",
+        "(fail) pending worker under a busy wallet, real clock > a busy wallet with more pendings than the batch does not keep another wallet's reversal out [30638.56ms]",
+        "(fail) SQS consumer: one message per receive > R1-01: a head that fails transiently up to the DLQ does not drag the followers of its group there [33858.67ms]",
+        "(fail) metric values follow the outcomes > db_lock_conflicts_total counts a lock timeout under its SQLSTATE [30035.66ms]",
+        "(fail) SIGTERM > with pending reversals stuck on a locked wallet, the pending worker stops after the candidate in flight and the exit code is 0 [13625.57ms]",
+        "(fail) lock timeout is transient > a wallet locked longer than lock_timeout gives 503 + Retry-After and records nothing [30048.91ms]",
+        "(fail) two publishers over the same outbox, one dies mid-batch (section 11 + section 13, test 6) > commit → crash before publishing → another instance publishes → the consumer applies each event once [1918.08ms]",
+        "(fail) pending worker under a busy wallet, real clock > a busy wallet with more pendings than the batch does not keep another wallet's reversal out [30638.56ms]",
+        "(fail) SQS consumer: one message per receive > R1-01: a head that fails transiently up to the DLQ does not drag the followers of its group there [33858.67ms]",
+        "(fail) metric values follow the outcomes > db_lock_conflicts_total counts a lock timeout under its SQLSTATE [30035.66ms]",
+        "(fail) SIGTERM > with pending reversals stuck on a locked wallet, the pending worker stops after the candidate in flight and the exit code is 0 [13625.57ms]"
+      ]
+    },
+    {
+      "mutant": "M16 REFUND accepts a WIN as reference",
+      "killed": true,
+      "pass": 351,
+      "fail": 2,
+      "timed_out": false,
+      "seconds": 150,
+      "failed_tests": [
+        "(fail) REFUND > of a WIN is 422 REFERENCE_KIND_NOT_ALLOWED [27.53ms]",
+        "(fail) REFUND > of a WIN is REFERENCE_KIND_NOT_ALLOWED [2.59ms]",
+        "(fail) REFUND > of a WIN is 422 REFERENCE_KIND_NOT_ALLOWED [27.53ms]",
+        "(fail) REFUND > of a WIN is REFERENCE_KIND_NOT_ALLOWED [2.59ms]"
+      ]
+    },
+    {
+      "mutant": "M17 SIGTERM does not wait for messages in flight",
+      "killed": true,
+      "pass": 352,
+      "fail": 1,
+      "timed_out": false,
+      "seconds": 139,
+      "failed_tests": [
+        "(fail) SIGTERM > drains: readiness goes 503, the message in flight commits and is acked, exit code 0 [4131.95ms]",
+        "(fail) SIGTERM > drains: readiness goes 503, the message in flight commits and is acked, exit code 0 [4131.95ms]"
+      ]
+    },
+    {
+      "mutant": "M18 missing reference is REJECTED at once",
+      "killed": true,
+      "pass": 335,
+      "fail": 18,
+      "timed_out": false,
+      "seconds": 145,
+      "failed_tests": [
+        "(fail) REFUND/ROLLBACK delivered before their reference (section 13, test 7) > waits as PENDING_REFERENCE (202), then the BET arrives and the worker applies it [43.40ms]",
+        "(fail) REFUND/ROLLBACK delivered before their reference (section 13, test 7) > retries with backoff while the reference is missing (not due again right away) [14.41ms]",
+        "(fail) REFUND/ROLLBACK delivered before their reference (section 13, test 7) > is REJECTED REFERENCE_NOT_FOUND with an event once the TTL expires [14.13ms]",
+        "(fail) REFUND/ROLLBACK delivered before their reference (section 13, test 7) > a chain resolves in order: ROLLBACK of a pending REFUND of a missing BET [27.82ms]",
+        "(fail) REFUND/ROLLBACK delivered before their reference (section 13, test 7) > a pending reversal of a BET that ends REJECTED is rejected as REFERENCE_NOT_PROCESSED [15.29ms]",
+        "(fail) REFUND/ROLLBACK delivered before their reference (section 13, test 7) > reversal and reference racing: the reversal is applied exactly once (10 rounds) [29.18ms]",
+        "(fail) REFUND/ROLLBACK delivered before their reference (section 13, test 7) > the scheduled worker resolves pending transactions on its own (real clock, background loop) [56.55ms]",
+        "(fail) REFUND/ROLLBACK delivered before their reference (section 13, test 7) > two workers on the same due pending transaction apply it once [65.00ms]",
+        "(fail) the reference is resolved only inside the same providerId (section 7, rule 2) > another provider's transaction with the same external id is never taken as the reference [22.49ms]",
+        "(fail) pending worker under a busy wallet, real clock > a busy wallet with more pendings than the batch does not keep another wallet's reversal out [242.48ms]",
+        "(fail) pending worker under a busy wallet, real clock > control: with fewer pendings than the batch, the reversal gets in too [263.83ms]",
+        "(fail) pending worker under a busy wallet > backs the busy candidates off, so a due reversal of another wallet is applied in the next pass [36.84ms]"
+      ]
+    },
+    {
+      "mutant": "M19 reversal without funds uses the BET code",
+      "killed": true,
+      "pass": 351,
+      "fail": 2,
+      "timed_out": false,
+      "seconds": 151,
+      "failed_tests": [
+        "(fail) ROLLBACK > that would make the balance negative is 422 REVERSAL_INSUFFICIENT_FUNDS and stays auditable [23.66ms]",
+        "(fail) ROLLBACK > that would make the balance negative is REVERSAL_INSUFFICIENT_FUNDS (distinct from a bet without funds) [2.15ms]",
+        "(fail) ROLLBACK > that would make the balance negative is 422 REVERSAL_INSUFFICIENT_FUNDS and stays auditable [23.66ms]",
+        "(fail) ROLLBACK > that would make the balance negative is REVERSAL_INSUFFICIENT_FUNDS (distinct from a bet without funds) [2.15ms]"
+      ]
+    },
+    {
+      "mutant": "M20 reversal with another amount accepted",
+      "killed": true,
+      "pass": 351,
+      "fail": 2,
+      "timed_out": false,
+      "seconds": 148,
+      "failed_tests": [
+        "(fail) REFUND > with another amount is 422 AMOUNT_MISMATCH (no partial reversal) [22.30ms]",
+        "(fail) REFUND > with a different amount is AMOUNT_MISMATCH [1.95ms]",
+        "(fail) REFUND > with another amount is 422 AMOUNT_MISMATCH (no partial reversal) [22.30ms]",
+        "(fail) REFUND > with a different amount is AMOUNT_MISMATCH [1.95ms]"
+      ]
+    }
+  ]
+}
