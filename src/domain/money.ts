@@ -23,6 +23,9 @@ const KNOWN_CURRENCIES: ReadonlySet<string> = new Set(Intl.supportedValuesOf("cu
 
 export const MONEY_SCALE = 2;
 
+/** Largest amount the storage holds (numeric(20,2)); a balance may never pass it. */
+const STORABLE_MAX = new Dec("999999999999999999.99");
+
 export class Money {
   private constructor(
     private readonly value: Decimal,
@@ -79,6 +82,11 @@ export class Money {
 
   isNegative(): boolean {
     return this.value.lessThan(0);
+  }
+
+  /** False when the value would not fit numeric(20,2), the storage of every amount and balance. */
+  isStorable(): boolean {
+    return this.value.lessThanOrEqualTo(STORABLE_MAX);
   }
 
   isLessThan(other: Money): boolean {

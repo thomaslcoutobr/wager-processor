@@ -25,8 +25,8 @@ export class ResolvePendingReference {
     const ctx: RequestContext = { source: "worker", correlationId: this.ids.next(), causationId: transactionId };
     let kind = "unknown";
     const outcome = await this.uow.run(async (store) => {
-      const now = this.clock.now();
       const wallet = await store.lockWallet(walletId); // always the first lock
+      const now = this.clock.now(); // after the lock, like every decision (R1-05)
       const tx = await store.findTransactionById(transactionId);
       if (!wallet || !tx || tx.status !== S.PendingReference) return "not_pending" as const;
       kind = tx.kind;
@@ -67,8 +67,8 @@ export class ResolvePendingReference {
   async markFailed(transactionId: string, walletId: string): Promise<boolean> {
     const ctx: RequestContext = { source: "worker", correlationId: this.ids.next(), causationId: transactionId };
     return this.uow.run(async (store) => {
-      const now = this.clock.now();
       const wallet = await store.lockWallet(walletId);
+      const now = this.clock.now();
       const tx = await store.findTransactionById(transactionId);
       if (!wallet || !tx || tx.status !== S.PendingReference) return false;
       tx.fail({ code: "PROCESSING_FAILED", at: now });

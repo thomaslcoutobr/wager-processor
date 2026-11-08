@@ -108,8 +108,8 @@ export class ProcessWagerMessage {
   private async recordFailure(command: SubmitWagerCommand, ctx: RequestContext, messageId: string): Promise<void> {
     const hash = payloadHashOf(command);
     await this.uow.run(async (store) => {
-      const now = this.clock.now();
       const wallet = await store.lockWallet(command.walletId);
+      const now = this.clock.now();
       if (!wallet) return;
       const existing = await store.findTransactionsByKeyOrExternalId(command.providerId, command.idempotencyKey, command.externalTransactionId);
       if (existing.length > 0) return; // someone else recorded an outcome meanwhile

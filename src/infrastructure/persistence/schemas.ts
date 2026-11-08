@@ -42,6 +42,7 @@ export const WagerTransactionSchema = defineEntity({
     status: p.text(),
     failureCode: p.text().nullable(),
     resultBalance: p.decimal().precision(20).scale(2).nullable(),
+    resultCurrency: p.string().length(3).nullable(),
     attempts: p.integer(),
     nextAttemptAt: p.datetime().nullable(),
     pendingDeadlineAt: p.datetime().nullable(),

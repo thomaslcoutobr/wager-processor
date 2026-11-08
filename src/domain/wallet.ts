@@ -30,7 +30,7 @@ export interface MovementProps {
 }
 
 /** Insufficient funds is a normal protocol outcome, so it is a result value, not an exception. */
-export type BalanceChange = { ok: true; entry: WalletLedgerEntry } | { ok: false; reason: "INSUFFICIENT_FUNDS" };
+export type BalanceChange = { ok: true; entry: WalletLedgerEntry } | { ok: false; reason: "INSUFFICIENT_FUNDS" | "BALANCE_LIMIT_EXCEEDED" };
 
 const PLAYER_ID_MAX = 64;
 
@@ -107,6 +107,7 @@ export class Wallet {
 
   credit(m: MovementProps): BalanceChange {
     this.assertMovement(m.money);
+    if (!this._balance.add(m.money).isStorable()) return { ok: false, reason: "BALANCE_LIMIT_EXCEEDED" };
     return { ok: true, entry: this.move(LedgerDirection.Credit, m) };
   }
 

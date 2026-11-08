@@ -32,6 +32,7 @@ export const BusinessRejectionCodes = [
   "REFERENCE_NOT_PROCESSED",
   "ALREADY_REVERSED",
   "AMOUNT_MISMATCH",
+  "BALANCE_LIMIT_EXCEEDED",
 ] as const;
 
 export const PermanentFailureCodes = ["PROCESSING_FAILED"] as const;

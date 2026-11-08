@@ -39,6 +39,7 @@ export interface TransactionRow {
   status: string;
   failureCode: string | null;
   resultBalance: string | null;
+  resultCurrency: string | null;
   attempts: number;
   nextAttemptAt: Date | null;
   pendingDeadlineAt: Date | null;
@@ -106,7 +107,8 @@ export const transactionMapper = {
       referenceTransactionId: opt(r.referenceTransactionId),
       status: r.status as WagerTransactionStatus,
       failureCode: opt(r.failureCode) as FailureCode | undefined,
-      resultBalance: r.resultBalance === null ? undefined : money(r.resultBalance, r.currency),
+      // in the wallet currency, which differs from the transaction one on CURRENCY_MISMATCH (CHECK pairs both columns)
+      resultBalance: r.resultBalance === null ? undefined : money(r.resultBalance, r.resultCurrency!),
       attempts: r.attempts,
       nextAttemptAt: opt(r.nextAttemptAt),
       pendingDeadlineAt: opt(r.pendingDeadlineAt),
@@ -134,6 +136,7 @@ export const transactionMapper = {
       status: s.status,
       failureCode: nul(s.failureCode),
       resultBalance: s.resultBalance ? s.resultBalance.amount : null,
+      resultCurrency: s.resultBalance ? s.resultBalance.currency : null,
       attempts: s.attempts,
       nextAttemptAt: nul(s.nextAttemptAt),
       pendingDeadlineAt: nul(s.pendingDeadlineAt),
@@ -149,6 +152,7 @@ export const transactionMapper = {
       failureCode: r.failureCode,
       referenceTransactionId: r.referenceTransactionId,
       resultBalance: r.resultBalance,
+      resultCurrency: r.resultCurrency,
       attempts: r.attempts,
       nextAttemptAt: r.nextAttemptAt,
       pendingDeadlineAt: r.pendingDeadlineAt,

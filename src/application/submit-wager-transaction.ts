@@ -116,11 +116,11 @@ export class SubmitWagerTransaction {
     ctx: RequestContext,
     inbox?: InboxRef,
   ): Promise<SubmitResult> {
-    const now = this.clock.now();
-
     // 2. the wallet lock is always the first lock of the transaction (no lock-order cycles)
     const wallet = await store.lockWallet(command.walletId);
     if (!wallet) return { type: "wallet_not_found" };
+    // read the time only now: whoever held the lock decided before us, so ledger time follows wallet_version (R1-05)
+    const now = this.clock.now();
 
     // 3. inbox (queue entry only)
     if (inbox) {
@@ -186,11 +186,15 @@ export class SubmitWagerTransaction {
     return { type: "decided", transaction, replay: false };
   }
 
-  /** Same key + same hash → replay; same key + other hash → 409; other key, same external id → replay or 409. */
+  /**
+   * Same key + same hash → replay; same key + other hash → 409. The key is the source of truth, so the
+   * same external id under another key is a 409 even with the same payload: a replay there would answer
+   * for a key that is never recorded, and that key could later process a different payload (La-02).
+   */
   private classify(found: WagerTransaction[], command: SubmitWagerCommand, hash: string): SubmitResult {
     const byKey = found.find((t) => t.idempotencyKey === command.idempotencyKey);
     const existing = byKey ?? found[0]!;
-    if (existing.matchesPayload(hash)) return { type: "decided", transaction: existing, replay: true };
+    if (byKey?.matchesPayload(hash)) return { type: "decided", transaction: byKey, replay: true };
     return {
       type: "conflict",
       code: byKey ? "IDEMPOTENCY_KEY_PAYLOAD_MISMATCH" : "EXTERNAL_TRANSACTION_ID_CONFLICT",

@@ -118,6 +118,7 @@ export const WagerSettlement = {
     if (direction !== undefined && tx.money.isPositive()) {
       const change = wallet.apply(direction, { money: tx.money, transactionId: tx.id, entryId: input.entryId, at: now });
       if (!change.ok) {
+        if (change.reason === "BALANCE_LIMIT_EXCEEDED") return reject("BALANCE_LIMIT_EXCEEDED", reference?.id);
         return reject(tx.requiresReference() ? "REVERSAL_INSUFFICIENT_FUNDS" : "INSUFFICIENT_FUNDS", reference?.id);
       }
       entry = change.entry;

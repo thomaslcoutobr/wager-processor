@@ -133,13 +133,13 @@ describe("POST /wagering/transactions", () => {
     expect((await walletOf(walletId)).balance.amount).toBe("90.00");
   });
 
-  it("same externalTransactionId under another key: replay if same payload, 409 otherwise", async () => {
+  it("same externalTransactionId under another key is a 409 even with the same payload (the key is the source of truth)", async () => {
     const { walletId, playerId } = await newWallet("100.00");
     const req = wagerBody({ walletId, playerId, amount: "10.00" });
     const first = await call(base, "POST", "/wagering/transactions", req.body, { "Idempotency-Key": req.key });
     const same = await call(base, "POST", "/wagering/transactions", req.body, { "Idempotency-Key": "another-key" });
-    expect(same.status).toBe(200);
-    expect(same.body).toMatchObject({ transactionId: first.body.transactionId, idempotentReplay: true });
+    expect(same.status).toBe(409);
+    expect(same.body).toMatchObject({ code: "EXTERNAL_TRANSACTION_ID_CONFLICT", retry: "NEVER", transactionId: first.body.transactionId });
     const diff = await call(
       base,
       "POST",
@@ -150,6 +150,52 @@ describe("POST /wagering/transactions", () => {
     expect(diff.status).toBe(409);
     expect(diff.body.code).toBe("EXTERNAL_TRANSACTION_ID_CONFLICT");
     expect((await walletOf(walletId)).balance.amount).toBe("90.00");
+  });
+
+  it("a key that only ever got a 409 is not bound to anything: reused for a new operation it processes once", async () => {
+    // La-02: before, the second key got a replay of E1 without being recorded, so it could later
+    // answer a different payload as a brand-new operation. Now it never answered a result.
+    const { walletId, playerId } = await newWallet("100.00");
+    const e1 = wagerBody({ walletId, playerId, amount: "10.00" });
+    await call(base, "POST", "/wagering/transactions", e1.body, { "Idempotency-Key": e1.key });
+    const k2 = `k2-${crypto.randomUUID()}`;
+    expect((await call(base, "POST", "/wagering/transactions", e1.body, { "Idempotency-Key": k2 })).status).toBe(409);
+    const e2 = wagerBody({ walletId, playerId, amount: "10.00" });
+    const fresh = await call(base, "POST", "/wagering/transactions", e2.body, { "Idempotency-Key": k2 });
+    expect(fresh.status).toBe(200);
+    expect(fresh.body.idempotentReplay).toBe(false);
+    const again = await call(base, "POST", "/wagering/transactions", e2.body, { "Idempotency-Key": k2 });
+    expect(again.body).toMatchObject({ transactionId: fresh.body.transactionId, idempotentReplay: true });
+    expect((await walletOf(walletId)).balance.amount).toBe("80.00");
+  });
+
+  it("a CURRENCY_MISMATCH rejection replays the wallet balance in the wallet currency (POST, replay and GET agree)", async () => {
+    // La-01: result_balance was stored without its currency and rehydrated with the transaction's.
+    const { walletId, playerId } = await newWallet("50.00");
+    const req = wagerBody({ walletId, playerId, currency: "USD" });
+    const r1 = await call(base, "POST", "/wagering/transactions", req.body, { "Idempotency-Key": req.key });
+    expect(r1.status).toBe(422);
+    expect(r1.body.balance).toEqual({ amount: "50.00", currency: "BRL" });
+    const r2 = await call(base, "POST", "/wagering/transactions", req.body, { "Idempotency-Key": req.key });
+    expect(r2.status).toBe(422);
+    expect(r2.body.idempotentReplay).toBe(true);
+    expect(r2.body.balance).toEqual(r1.body.balance);
+    const g = await call(base, "GET", `/wagering/transactions/${r1.body.transactionId}`);
+    expect(g.body.money).toEqual({ amount: "10.00", currency: "USD" });
+    expect(g.body.balance).toEqual({ amount: "50.00", currency: "BRL" });
+  });
+
+  it("a credit that would pass the largest representable balance is a 422 BALANCE_LIMIT_EXCEEDED, not a 500", async () => {
+    // H3: numeric(20,2) holds up to 999999999999999999.99; the sum used to reach Postgres as 22003.
+    const { walletId, playerId } = await newWallet("999999999999999999.00");
+    const win = await postWager(base, { walletId, playerId, kind: "WIN", amount: "1.00" });
+    expect(win.status).toBe(422);
+    expect(win.body).toMatchObject({ status: "REJECTED", failureCode: "BALANCE_LIMIT_EXCEEDED", retry: "NEVER" });
+    expect(win.body.balance).toEqual({ amount: "999999999999999999.00", currency: "BRL" });
+    const fits = await postWager(base, { walletId, playerId, kind: "WIN", amount: "0.99" });
+    expect(fits.status).toBe(200);
+    expect(fits.body.balance.amount).toBe("999999999999999999.99");
+    await expectWalletConsistent(db.app, walletId);
   });
 
   it("insufficient funds is a 422 REJECTED, recorded, with no ledger entry; the replay is 422 too", async () => {
