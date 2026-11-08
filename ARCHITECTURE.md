@@ -253,6 +253,17 @@ Migrations em SQL escrito à mão (`migration:create --blank`), com `up` e `down
 `up → down → up`. Nada de `schema:update` nem de diff automático: o schema tem `CHECK`, trigger e
 índice parcial que o diff dos metadados não entende **[medido na pesquisa]**.
 
+São duas migrations, e o SQL desta seção mostra o resultado das duas juntas:
+- `Migration20261107000100_schema`: o schema da F3;
+- `Migration20261108000100_review_hardening`: o que a revisão da F4 endureceu (`result_currency` com
+  backfill a partir da wallet, CHECKs contra `NaN`, o `ledger_entry_is_backed` mais estrito e o
+  `wallet_guard`).
+
+Migration aplicada não se edita, nem em projeto novo: a 1ª versão destes consertos mexeu na migration
+inicial, e o banco do compose, que já a tinha aplicado, ficou sem a coluna nova (500 na criação de
+wallet). Teste do caminho de atualização, com dado gravado na 1ª migration:
+`test/integration/schema.test.ts`, "upgrades in place".
+
 ### 6.1 Papéis
 
 - `wager` é o dono das tabelas e roda as migrations.

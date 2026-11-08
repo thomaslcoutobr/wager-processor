@@ -84,6 +84,44 @@ describe("migrations", () => {
       await fresh.drop();
     }
   });
+
+  it("a database with data at the first migration upgrades in place: result_currency comes from the wallet", async () => {
+    const old = await createTestDb("migrupg", { migrate: false });
+    try {
+      expect(await migrateUp(old.ownerUrl, { to: "Migration20261107000100_schema" })).toEqual(["Migration20261107000100_schema"]);
+      const walletId = crypto.randomUUID();
+      const openingId = crypto.randomUUID();
+      const rejectedId = crypto.randomUUID();
+      await old.owner.begin(async (tx) => {
+        await tx`insert into wallets (id, player_id, currency, balance, version, created_at, updated_at)
+                 values (${walletId}, 'p-upg', 'BRL', 50, 1, now(), now())`;
+        await tx`insert into wager_transactions (id, provider_id, external_transaction_id, idempotency_key, payload_hash,
+                   wallet_id, player_id, kind, amount, currency, status, result_balance, created_at, processed_at)
+                 values (${openingId}, '__internal__', ${"opening:" + walletId}, ${"opening:" + walletId}, 'internal',
+                   ${walletId}, 'p-upg', 'OPENING', 50, 'BRL', 'PROCESSED', 50, now(), now())`;
+        await tx`insert into wallet_ledger_entries (id, wallet_id, transaction_id, direction, amount, currency,
+                   balance_before, balance_after, wallet_version, created_at)
+                 values (${crypto.randomUUID()}, ${walletId}, ${openingId}, 'CREDIT', 50, 'BRL', 0, 50, 1, now())`;
+        // a CURRENCY_MISMATCH rejection recorded by the old code: the balance is the wallet's (BRL)
+        await tx`insert into wager_transactions (id, provider_id, external_transaction_id, idempotency_key, payload_hash,
+                   wallet_id, player_id, round_id, game_id, kind, amount, currency, status, failure_code, result_balance,
+                   created_at, processed_at)
+                 values (${rejectedId}, 'provider-a', 'ext-upg', 'k-upg', 'v1:sha256:x', ${walletId}, 'p-upg', 'r', 'g',
+                   'BET', 10, 'USD', 'REJECTED', 'CURRENCY_MISMATCH', 50, now(), now())`;
+      });
+
+      expect(await migrateUp(old.ownerUrl)).toEqual(["Migration20261108000100_review_hardening"]);
+      const rows = await old.owner`select id, currency, result_currency from wager_transactions order by kind`;
+      expect(rows).toEqual([
+        { id: rejectedId, currency: "USD", result_currency: "BRL" },
+        { id: openingId, currency: "BRL", result_currency: "BRL" },
+      ]);
+      // the frozen-row guard is back on after the backfill
+      await expectSqlState(old.owner`update wager_transactions set failure_code = 'X' where id = ${rejectedId}`, "P0001");
+    } finally {
+      await old.drop();
+    }
+  });
 });
 
 describe("wallets", () => {
