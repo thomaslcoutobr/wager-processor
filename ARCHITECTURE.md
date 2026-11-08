@@ -8,6 +8,11 @@
 > Legenda de evidência: **[medido]** = rodei em laboratório (Bun 1.4.4, Postgres 17, MiniStack 1.5.38)
 > durante a pesquisa; **[doc]** = documentação oficial citada em [§21](#21-referências);
 > **[decisão]** = escolha minha, justificada no texto.
+>
+> **Por onde ler:** a [§1](#1-decisões-em-uma-tela) resume tudo numa tela; o resto é o detalhe de cada
+> decisão. Marcas como **[ajuste na F4, Lb-02]** ou `R1-05` no texto e nos comentários do código são
+> códigos da revisão interna feita depois da implementação (F4: revisões por lentes, cada achado com
+> teste vermelho antes do conserto). O código só identifica o achado; o texto ao lado diz o que mudou.
 
 ---
 
@@ -24,7 +29,7 @@
 | Hash do payload | `v1:sha256:` + SHA-256 do JSON canônico **RFC 8785** (lib `canonicalize`) de uma lista fechada de campos de negócio | Algoritmo padronizado e versionado. |
 | HTTP | 200 PROCESSED · **422 REJECTED** · 202 PENDING_REFERENCE · 400 · 404 · 409 · 503 + `Retry-After` | As 5 situações da seção 9 têm códigos distintos; o provedor decide reenviar só pelo código, e o corpo traz `status`, `failureCode` e `retry`. |
 | Fila | **MiniStack** (SQS FIFO + DLQ), imagem trocável por `AWS_EMULATOR_IMAGE` | O LocalStack exige token desde 23/03/2026; sem token o container sai com código 55 **[medido]**. |
-| Consumidor SQS | Próprio (~150 linhas), inbox por `(consumer_name, message_id)`, ack só depois do commit, 3 classes de erro, DLQ com motivo | As decisões que o enunciado avalia ficam visíveis no código. |
+| Consumidor SQS | Próprio (`sqs-consumer.ts`, ~300 linhas), inbox por `(consumer_name, message_id)`, ack só depois do commit, 3 classes de erro, DLQ com motivo | As decisões que o enunciado avalia ficam visíveis no código. |
 | Outbox | Linha gravada na mesma transação; publishers concorrentes com `FOR UPDATE SKIP LOCKED`; `MessageDeduplicationId = eventId` | Pelo menos uma vez, de propósito; o consumidor dos eventos deduplica por `eventId`. |
 | Referência fora de ordem | `PENDING_REFERENCE` + worker com backoff exponencial e **TTL de 10 min** (configurável) | Ver [§14](#14-worker-de-pending_reference). |
 | Autenticação | **Não implementada.** Ponto de extensão `ProviderIdentityPort` + `AuthGuard` no-op | Vale 0 pontos; o desenho com Keycloak está em [§18](#18-autenticação-ponto-de-extensão). |
@@ -990,11 +995,13 @@ competir com correção financeira, concorrência e idempotência.
 
 O que fica no código:
 
-- `ProviderIdentityPort.resolve(request): Promise<ProviderIdentity>` e um `AuthGuard` global nos
-  endpoints de negócio (os de health ficam de fora). Hoje o adaptador é no-op: aceita a requisição e
-  devolve a identidade "anônima".
-- O use case já recebe a identidade e tem o ponto de checagem "o `providerId` do payload pertence à
-  identidade autenticada" (desligado no no-op), que viraria 403 `PROVIDER_MISMATCH`.
+- `ProviderIdentityPort.resolve(headers): Promise<ProviderIdentity>` e um `AuthGuard` global nos
+  endpoints de negócio (os de health ficam de fora), em `src/interfaces/http/auth.ts`. Hoje o
+  adaptador é no-op: aceita a requisição e pendura a identidade "anônima" em `req.identity`.
+- O ponto de checagem "o `providerId` do payload pertence à identidade autenticada", que viraria 403
+  `PROVIDER_MISMATCH`, está marcado no guard e **não está implementado**. O use case não recebe a
+  identidade: com autenticação de verdade, a checagem ficaria no controller ou no guard, antes do use
+  case, e a fila (canal interno) não passa por ela.
 
 Desenho que eu adotaria: **Keycloak** no compose, um *confidential client* OIDC por provedor, fluxo
 *client credentials*. O guard valida o JWT pelo JWKS do realm (assinatura, `iss`, `aud`, `exp`) e mapeia
@@ -1103,7 +1110,9 @@ a regra de reenvio para o provedor ([§10.2](#102-mapa-de-status)); as variávei
   seja: uma wallet quente derruba a vazão da **instância** inteira enquanto dura, e o `ready` em 503 a
   tira do balanceador. Isolar a wallet quente (pool próprio ou limite de espera por wallet) ficou de fora.
 - **Ordem dos eventos:** garantida por wallet, também entre publishers (Lb-08, §13). O `walletVersion`
-  no evento continua lá para o consumidor que quiser conferir.
+  vai no `WalletBalanceChanged` para um consumidor futuro poder descartar evento velho ou notar buraco;
+  hoje nenhum consumidor nem teste usa esse campo para isso (o consumidor de referência dos testes
+  deduplica só por `eventId`).
 - **A transação do publisher fica aberta durante o `SendMessage`.** **[ajuste na F4, H4]** Ela agora tem
   teto: cada envio (inclusive a busca da URL da fila) desiste em 5 s, a passada para no primeiro envio
   que falha (o SQS provavelmente caiu; testar os outros grupos só alongaria a transação) e para ao
@@ -1114,8 +1123,18 @@ a regra de reenvio para o provedor ([§10.2](#102-mapa-de-status)); as variávei
 - **FIFO deduplica só por 5 min**; depois disso a republicação é duplicata real, coberta pelo `eventId`.
 - **O dono do banco ou um superusuário consegue contornar os triggers.** A promessa é que a
   aplicação não consegue; o contorno exige papel privilegiado, que precisa ser auditado à parte.
-- **O MiniStack não é o SQS real.** Fidelidade boa nos testes da pesquisa, mas a janela de 5 min e o
-  comportamento sob carga não foram medidos.
+- **O que os testes não provam sobre a AWS** (rodam no MiniStack 1.5.38, não no SQS real):
+  1. a janela de deduplicação de 5 min do FIFO (nenhum teste espera 5 min; a defesa real é a inbox e o `eventId`);
+  2. o comportamento sob carga e os limites de vazão do FIFO (sem teste de carga);
+  3. o redrive automático por `maxReceiveCount` com processo morrendo de verdade 5 vezes; o caminho
+     testado é a DLQ enviada pelo próprio consumidor;
+  4. IAM, criptografia, throttling e falha de rede parcial da AWS.
+  O "não entrega a seguinte do grupo enquanto a cabeça está em voo" vem da documentação da AWS e foi
+  lido no código do MiniStack ([§12](#12-consumidor-sqs)).
+- **Reconciliação em escala não existe.** Hoje há o endpoint por wallet e a conferência de todas as
+  wallets ao fim de cada teste. Em produção eu faria um job em lotes (paginando wallets pelo id),
+  incremental (conferindo só as versões novas desde o último ponto conferido de cada wallet) e com o
+  resultado numa tabela, para não varrer o ledger inteiro a cada vez.
 - **`ready` depende do SQS** (como pede o enunciado): com o SQS fora, a instância sai do balanceador,
   mesmo podendo atender o POST síncrono. Em produção eu separaria os dois sinais.
 - **Senhas de desenvolvimento** no compose e na migration (`wager`, `wager_app`). Em produção, viriam
@@ -1128,6 +1147,18 @@ a regra de reenvio para o provedor ([§10.2](#102-mapa-de-status)); as variávei
   um incidente passageiro num `FAILED` definitivo.
 - **A fila de eventos não tem consumidor de produção** neste desafio; o consumidor de referência
   existe só nos testes, para provar o contrato de deduplicação por `eventId`.
+- **Pegadinhas da stack que custaram tempo** (todas medidas; detalhe nas seções citadas):
+  - MikroORM: dentro de `em.transactional`, `conn.execute()` pega outra conexão e trava o pool; usar
+    `em.execute()` ([§3](#3-camadas-e-pastas)). O EM global recusa operação fora de contexto: um
+    `em.fork()` por mensagem ([§12](#12-consumidor-sqs)). `PESSIMISTIC_PARTIAL_WRITE` vira
+    `SKIP LOCKED` (bom na outbox, nunca na wallet).
+  - NestJS + MikroORM: o pool fecha em `onApplicationShutdown`; o dreno do SIGTERM tem de ficar em
+    `beforeApplicationShutdown` ([§12](#12-consumidor-sqs)).
+  - Bun: `process.kill(process.pid, 'SIGKILL')` sai com 137 e serve de failpoint ([§16](#16-falhas-e-recuperação));
+    o SIGTERM no Windows não é confiável, por isso os testes rodam no Linux do container ([§19](#19-estratégia-de-testes)).
+  - Postgres: `numeric(20,2)` arredonda casa a mais em silêncio, então a validação de 2 casas no
+    `Money` é obrigatória ([§4.1](#41-money)); migration já aplicada não se edita, mudança de schema vai
+    numa migration nova.
 - **Complexidade:** triggers diferidos, papel separado no banco, failpoints e consumidor próprio são
   mecanismos a mais para manter. Cada um responde a um item avaliado (restrição 9, ledger imutável,
   teste 5 da seção 13, seção 10). Se o prazo apertar, o primeiro a sair é o trigger diferido, que vira
