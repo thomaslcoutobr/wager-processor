@@ -1,5 +1,5 @@
 import { type ArgumentsHost, Catch, type ExceptionFilter, HttpException } from "@nestjs/common";
-import { DatabaseInvariantError, RetryableConflictError, TransientError } from "../../application/errors";
+import { RetryableConflictError, TransientError } from "../../application/errors";
 import type { FieldError } from "../../application/wager-command";
 import { DomainValidationError } from "../../domain/errors";
 
@@ -66,10 +66,8 @@ export function toProblem(exception: unknown): ProblemException {
     if (status === 404) return new ProblemException(404, "NOT_FOUND", "no such route", "NEVER");
     if (status < 500) return new ProblemException(status, "VALIDATION_ERROR", exception.message, "AFTER_FIX");
   }
-  if (exception instanceof DatabaseInvariantError) {
-    // the schema refused something validation and the domain should have stopped: a bug, nothing was written
-    return new ProblemException(500, "INTERNAL_ERROR", "unexpected processing error", "SAME_REQUEST");
-  }
+  // anything else, including DatabaseInvariantError (the schema refused something validation and the
+  // domain should have stopped): a bug, the transaction rolled back, nothing was written
   return new ProblemException(500, "INTERNAL_ERROR", "unexpected processing error", "SAME_REQUEST");
 }
 

@@ -1,5 +1,5 @@
 import type { WalletLedgerEntry } from "../../domain/ledger-entry";
-import { type WagerTransaction, WagerTransactionStatus as S } from "../../domain/wager-transaction";
+import { type WagerTransaction, WagerTransactionStatus as Status } from "../../domain/wager-transaction";
 import type { Wallet } from "../../domain/wallet";
 import type { RetryHint } from "./problem";
 
@@ -74,14 +74,14 @@ export function submitReply(t: WagerTransaction, replay: boolean): SubmitReply {
   let status: number;
   let retry: RetryHint | undefined;
   switch (t.status) {
-    case S.Processed:
+    case Status.Processed:
       status = 200;
       break;
-    case S.Rejected:
+    case Status.Rejected:
       status = 422;
       retry = "NEVER";
       break;
-    case S.PendingReference:
+    case Status.PendingReference:
       status = 202;
       retry = "POLL";
       headers.Location = `/wagering/transactions/${t.id}`;

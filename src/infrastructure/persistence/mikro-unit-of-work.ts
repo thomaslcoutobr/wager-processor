@@ -26,7 +26,8 @@ import {
 } from "./schemas";
 
 /**
- * One SQL transaction per `run`: fresh EntityManager fork (empty identity map), READ COMMITTED,
+ * One SQL transaction per `run`: fresh EntityManager fork (empty identity map), READ COMMITTED (the
+ * Postgres default; the code does not set it, and the design relies on it: ARCHITECTURE §7),
  * `SET LOCAL lock_timeout`, and the callback's `em` for every statement (never the pool directly,
  * which would grab another connection and starve the pool under load).
  */

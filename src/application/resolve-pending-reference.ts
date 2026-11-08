@@ -1,6 +1,6 @@
 import type { PendingReferencePolicy } from "../domain/pending-reference-policy";
 import { WagerSettlement } from "../domain/wager-settlement";
-import { type WagerTransaction, WagerTransactionStatus as S } from "../domain/wager-transaction";
+import { type WagerTransaction, WagerTransactionStatus as Status } from "../domain/wager-transaction";
 import { outboxFor } from "./event-factory";
 import type { Clock, IdGenerator, Metrics, RequestContext, TransactionalStore, UnitOfWork } from "./ports";
 
@@ -28,7 +28,7 @@ export class ResolvePendingReference {
       const wallet = await store.lockWallet(walletId); // always the first lock
       const now = this.clock.now(); // after the lock, like every decision (R1-05)
       const tx = await store.findTransactionById(transactionId);
-      if (!wallet || !tx || tx.status !== S.PendingReference) return "not_pending" as const;
+      if (!wallet || !tx || tx.status !== Status.PendingReference) return "not_pending" as const;
       kind = tx.kind;
 
       const reference = await store.findTransactionByExternalId(tx.providerId, tx.referenceExternalTransactionId!);
@@ -45,20 +45,20 @@ export class ResolvePendingReference {
         random: this.random,
       });
 
-      await store.updateTransaction(tx, S.PendingReference);
-      const entry = result.status === S.Processed ? result.entry : undefined;
+      await store.updateTransaction(tx, Status.PendingReference);
+      const entry = result.status === Status.Processed ? result.entry : undefined;
       if (entry) {
         await store.updateWallet(wallet, versionBefore);
         await store.insertLedgerEntry(entry);
       }
       await store.insertOutbox(outboxFor({ transaction: tx, wallet, entry, enteredPending: false, ctx, now }, this.ids));
       await nudgeDependents(store, tx, now);
-      if (result.status === S.Processed) return "processed" as const;
-      if (result.status === S.Rejected) return "rejected" as const;
+      if (result.status === Status.Processed) return "processed" as const;
+      if (result.status === Status.Rejected) return "rejected" as const;
       return "rescheduled" as const;
     });
     if (outcome === "processed" || outcome === "rejected") {
-      this.metrics.transactionDecided(outcome === "processed" ? S.Processed : S.Rejected, kind, "worker");
+      this.metrics.transactionDecided(outcome === "processed" ? Status.Processed : Status.Rejected, kind, "worker");
     }
     return outcome;
   }
@@ -70,9 +70,9 @@ export class ResolvePendingReference {
       const wallet = await store.lockWallet(walletId);
       const now = this.clock.now();
       const tx = await store.findTransactionById(transactionId);
-      if (!wallet || !tx || tx.status !== S.PendingReference) return false;
+      if (!wallet || !tx || tx.status !== Status.PendingReference) return false;
       tx.fail({ code: "PROCESSING_FAILED", at: now });
-      await store.updateTransaction(tx, S.PendingReference);
+      await store.updateTransaction(tx, Status.PendingReference);
       await store.insertOutbox(outboxFor({ transaction: tx, wallet, ctx, now }, this.ids));
       return true;
     });
@@ -85,7 +85,7 @@ export class ResolvePendingReference {
  * single decision path. A REJECTED reference is nudged too, so its dependents fail fast.
  */
 export async function nudgeDependents(store: TransactionalStore, tx: WagerTransaction, now: Date): Promise<void> {
-  if (tx.status === S.Processed || tx.status === S.Rejected) {
+  if (tx.status === Status.Processed || tx.status === Status.Rejected) {
     await store.nudgePendingReferences(tx.walletId, tx.providerId, tx.externalTransactionId, now);
   }
 }

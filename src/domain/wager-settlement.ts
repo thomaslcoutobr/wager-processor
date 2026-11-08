@@ -4,8 +4,8 @@ import type { WalletLedgerEntry } from "./ledger-entry";
 import type { PendingReferencePolicy } from "./pending-reference-policy";
 import {
   type WagerTransaction,
-  WagerTransactionKind as K,
-  WagerTransactionStatus as S,
+  WagerTransactionKind as Kind,
+  WagerTransactionStatus as Status,
 } from "./wager-transaction";
 import type { Wallet } from "./wallet";
 
@@ -26,22 +26,22 @@ export interface SettlementInput {
 }
 
 export type SettlementResult =
-  | { status: S.Processed; entry: WalletLedgerEntry | undefined }
-  | { status: S.Rejected; failureCode: BusinessRejectionCode }
-  | { status: S.PendingReference; rescheduled: boolean };
+  | { status: Status.Processed; entry: WalletLedgerEntry | undefined }
+  | { status: Status.Rejected; failureCode: BusinessRejectionCode }
+  | { status: Status.PendingReference; rescheduled: boolean };
 
 /** Which kinds each kind may reference (rule 3, plus the optional BET reference of WIN and LOSS). */
-const ALLOWED_REFERENCE: Readonly<Record<K, ReadonlySet<K>>> = {
-  [K.Opening]: new Set(),
-  [K.Bet]: new Set(),
-  [K.Win]: new Set([K.Bet]),
-  [K.Loss]: new Set([K.Bet]),
-  [K.Refund]: new Set([K.Bet]),
-  [K.Rollback]: new Set([K.Bet, K.Win, K.Refund]),
+const ALLOWED_REFERENCE: Readonly<Record<Kind, ReadonlySet<Kind>>> = {
+  [Kind.Opening]: new Set(),
+  [Kind.Bet]: new Set(),
+  [Kind.Win]: new Set([Kind.Bet]),
+  [Kind.Loss]: new Set([Kind.Bet]),
+  [Kind.Refund]: new Set([Kind.Bet]),
+  [Kind.Rollback]: new Set([Kind.Bet, Kind.Win, Kind.Refund]),
 };
 
 /**
- * The business rules of section 7 as one pure function (no I/O). It mutates the two aggregates it
+ * The business rules of section 7 of the challenge statement as one pure function (no I/O). It mutates the two aggregates it
  * is given (wallet balance/version and the transaction status) and returns the outcome; the caller
  * persists both plus the entry in a single SQL transaction.
  *
@@ -63,23 +63,23 @@ export const WagerSettlement = {
 
     const reject = (code: BusinessRejectionCode, referenceTransactionId?: string): SettlementResult => {
       tx.reject({ code, resultBalance: wallet.balance, at: now, referenceTransactionId });
-      return { status: S.Rejected, failureCode: code };
+      return { status: Status.Rejected, failureCode: code };
     };
 
     const waitOrExpire = (codeWhenExpired: BusinessRejectionCode): SettlementResult => {
-      if (tx.status === S.Pending) {
+      if (tx.status === Status.Pending) {
         tx.markPendingReference({
           resultBalance: wallet.balance,
           nextAttemptAt: policy.nextAttemptAt(now, 0, random),
           deadlineAt: policy.deadlineFrom(now),
         });
-        return { status: S.PendingReference, rescheduled: false };
+        return { status: Status.PendingReference, rescheduled: false };
       }
       const deadline = tx.pendingDeadlineAt;
       if (!deadline) throw new InvariantViolationError(`pending transaction ${tx.id} has no deadline`);
       if (policy.isExpired(deadline, now)) return reject(codeWhenExpired);
       tx.scheduleRetry({ nextAttemptAt: policy.nextAttemptAt(now, tx.attempts + 1, random) });
-      return { status: S.PendingReference, rescheduled: true };
+      return { status: Status.PendingReference, rescheduled: true };
     };
 
     // 1-2. the operation must target this wallet's currency and owner
@@ -103,8 +103,8 @@ export const WagerSettlement = {
         return reject("REFERENCE_MISMATCH", ref.id);
       }
       if (!ALLOWED_REFERENCE[tx.kind].has(ref.kind)) return reject("REFERENCE_KIND_NOT_ALLOWED", ref.id);
-      if (ref.status === S.PendingReference) return waitOrExpire("REFERENCE_NOT_PROCESSED");
-      if (ref.status !== S.Processed) return reject("REFERENCE_NOT_PROCESSED", ref.id);
+      if (ref.status === Status.PendingReference) return waitOrExpire("REFERENCE_NOT_PROCESSED");
+      if (ref.status !== Status.Processed) return reject("REFERENCE_NOT_PROCESSED", ref.id);
       if (tx.requiresReference()) {
         if (input.referenceAlreadyReversed) return reject("ALREADY_REVERSED", ref.id);
         if (!tx.money.equals(ref.money)) return reject("AMOUNT_MISMATCH", ref.id);
@@ -126,6 +126,6 @@ export const WagerSettlement = {
 
     // 5. applied
     tx.markProcessed({ referenceTransactionId: reference?.id, resultBalance: wallet.balance, at: now });
-    return { status: S.Processed, entry };
+    return { status: Status.Processed, entry };
   },
 };

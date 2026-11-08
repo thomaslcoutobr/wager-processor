@@ -8,7 +8,7 @@ import {
 } from "../domain/events";
 import type { WalletLedgerEntry } from "../domain/ledger-entry";
 import { OutboxMessage } from "../domain/outbox-message";
-import { type WagerTransaction, WagerTransactionStatus as S } from "../domain/wager-transaction";
+import { type WagerTransaction, WagerTransactionStatus as Status } from "../domain/wager-transaction";
 import type { Wallet } from "../domain/wallet";
 import type { IdGenerator, RequestContext } from "./ports";
 
@@ -37,20 +37,20 @@ export function outboxFor(
   const tx = p.transaction;
   const out: OutboxMessage[] = [];
   switch (tx.status) {
-    case S.Processed:
+    case Status.Processed:
       out.push(OutboxMessage.enqueue(WagerTransactionProcessed.from(tx, context()), group));
       if (p.entry) out.push(OutboxMessage.enqueue(WalletBalanceChanged.from(p.wallet, p.entry, context()), group));
       break;
-    case S.Rejected:
+    case Status.Rejected:
       out.push(OutboxMessage.enqueue(WagerTransactionRejected.from(tx, context()), group));
       break;
-    case S.PendingReference:
+    case Status.PendingReference:
       if (p.enteredPending) out.push(OutboxMessage.enqueue(WagerTransactionPendingReference.from(tx, context()), group));
       break;
-    case S.Failed:
+    case Status.Failed:
       out.push(OutboxMessage.enqueue(WagerTransactionFailed.from(tx, context()), group));
       break;
-    case S.Pending:
+    case Status.Pending:
       break;
   }
   return out;

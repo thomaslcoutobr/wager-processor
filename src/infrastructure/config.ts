@@ -98,6 +98,8 @@ export function loadConfig(env: Env = process.env): AppConfig {
       consumerName: env.SQS_CONSUMER_NAME ?? "wager-transactions-consumer",
       visibilityTimeoutS: int(env, "SQS_VISIBILITY_TIMEOUT_S", 30, 1),
       waitTimeS: int(env, "SQS_WAIT_TIME_S", 20, 0),
+      // must equal the queue's redrive maxReceiveCount (compose: MAX_RECEIVE_COUNT of the aws service);
+      // above it, the queue moves the message to the DLQ before this consumer decides to
       maxReceiveCount: int(env, "SQS_MAX_RECEIVE_COUNT", 5, 1),
       consumerConcurrency,
       retryBaseMs: int(env, "SQS_RETRY_BASE_MS", 1_000, 0),

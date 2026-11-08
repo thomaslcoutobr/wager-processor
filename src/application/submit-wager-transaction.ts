@@ -2,7 +2,7 @@ import type { ConflictCode } from "../domain/failure-code";
 import { InboxMessage } from "../domain/inbox-message";
 import type { PendingReferencePolicy } from "../domain/pending-reference-policy";
 import { WagerSettlement } from "../domain/wager-settlement";
-import { WagerTransaction, WagerTransactionStatus as S } from "../domain/wager-transaction";
+import { WagerTransaction, WagerTransactionStatus as Status } from "../domain/wager-transaction";
 import { RetryableConflictError, TransientError, UniqueViolationError } from "./errors";
 import { outboxFor } from "./event-factory";
 import { payloadHashOf } from "./payload-hash";
@@ -174,13 +174,13 @@ export class SubmitWagerTransaction {
 
     // 7-10. persist everything in this same transaction
     await store.insertTransaction(transaction);
-    const entry = outcome.status === S.Processed ? outcome.entry : undefined;
+    const entry = outcome.status === Status.Processed ? outcome.entry : undefined;
     if (entry) {
       await store.updateWallet(wallet, versionBefore);
       await store.insertLedgerEntry(entry);
     }
     await store.insertOutbox(
-      outboxFor({ transaction, wallet, entry, enteredPending: transaction.status === S.PendingReference, ctx, now }, this.ids),
+      outboxFor({ transaction, wallet, entry, enteredPending: transaction.status === Status.PendingReference, ctx, now }, this.ids),
     );
     await nudgeDependents(store, transaction, now);
     return { type: "decided", transaction, replay: false };

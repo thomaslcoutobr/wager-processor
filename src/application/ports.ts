@@ -56,7 +56,7 @@ export interface UnitOfWorkOptions {
 }
 
 export interface UnitOfWork {
-  /** BEGIN (READ COMMITTED) + lock_timeout … COMMIT. Any throw rolls everything back. */
+  /** BEGIN (READ COMMITTED, the Postgres default) + lock_timeout … COMMIT. Any throw rolls everything back. */
   run<T>(work: (store: TransactionalStore) => Promise<T>, options?: UnitOfWorkOptions): Promise<T>;
 }
 
@@ -106,24 +106,12 @@ export interface Metrics {
   reconciliationDivergence(): void;
 }
 
-export const noopMetrics: Metrics = {
-  transactionDecided() {},
-  duplicateDetected() {},
-  dbRetry() {},
-  lockConflict() {},
-  lockWaitSeconds() {},
-  processingSeconds() {},
-  reconciliationDivergence() {},
-};
 
 /** Named crash/fault injection points (no-op unless FAILPOINTS is set, never in production). */
 export interface FailpointPort {
   hit(name: string): Promise<void>;
 }
 
-export const noFailpoints: FailpointPort = {
-  async hit() {},
-};
 
 /** Correlation data that travels with a request or message into events and logs. */
 export interface RequestContext {

@@ -1,6 +1,6 @@
 /**
- * Stable, machine-readable failure codes (ARCHITECTURE §11). Grouped by what the provider should do:
- * A/B mean "your request is wrong", C is a final business rejection, D is a permanent processing
+ * Stable, machine-readable failure codes (ARCHITECTURE §11). Grouped by what the provider should do
+ * (the groups A to E are the rows of the table in §11): A/B mean "your request is wrong", C is a final business rejection, D is a permanent processing
  * failure, E is transient (retry the same request).
  */
 export const ValidationCodes = [
