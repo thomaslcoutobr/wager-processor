@@ -37,13 +37,8 @@ export class ReconcileWallet {
     const consistent = difference.isZero() && r.chainBreaks === 0;
     if (!consistent) {
       this.metrics.reconciliationDivergence();
-      this.log("error", "reconciliation divergence", {
-        walletId,
-        stored: stored.amount,
-        calculated: calculated.amount,
-        difference: difference.amount,
-        chainBreaks: r.chainBreaks,
-      });
+      // ids only, like every log line (ARCHITECTURE §17); the amounts are in the response
+      this.log("error", "reconciliation divergence", { walletId, balanceDiverges: !difference.isZero(), chainBreaks: r.chainBreaks });
     }
     return {
       walletId,

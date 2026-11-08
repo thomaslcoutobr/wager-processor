@@ -21,6 +21,8 @@ export function requireUuid(value: string, field: string): string {
   return value.toLowerCase();
 }
 
+const MAX_WALLET_VERSION = 2_147_483_647;
+
 /** Opaque, stable keyset cursor: base64url({"v": <wallet_version>}). */
 export function encodeCursor(version: number): string {
   return Buffer.from(JSON.stringify({ v: version })).toString("base64url");
@@ -29,7 +31,8 @@ export function encodeCursor(version: number): string {
 export function decodeCursor(cursor: string): number {
   try {
     const v = (JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as { v?: unknown }).v;
-    if (typeof v === "number" && Number.isInteger(v) && v >= 1) return v;
+    // wallet_version is an integer column: a version past it was never issued by us (Ld-03)
+    if (typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= MAX_WALLET_VERSION) return v;
   } catch {
     // fall through
   }

@@ -12,14 +12,26 @@ import { createTestDb, type TestDb } from "../helpers/test-db";
 // guarantees the loops must keep (order inside a wallet, room left in the pool).
 // Each test tears down what it opened right away: apps and pools left open until the end of the file
 // add up to Postgres' max_connections, and the last test would see DATABASE_UNAVAILABLE.
+// Closing apps and locks may fail harmlessly (already closed); the drop of a database may not: it is
+// where the balance = ledger invariant of every wallet is checked (Ld-01), so its error fails the test.
 const cleanup: Array<() => Promise<void>> = [];
+const mustPass = new Set<() => Promise<void>>();
 afterEach(async () => {
-  for (const c of cleanup.splice(0).reverse()) await c().catch(() => {});
+  let invariantError: unknown;
+  for (const c of cleanup.splice(0).reverse()) {
+    await c().catch((err) => {
+      if (mustPass.has(c) && invariantError === undefined) invariantError = err;
+    });
+  }
+  mustPass.clear();
+  if (invariantError !== undefined) throw invariantError;
 });
 
 async function freshDb(label: string): Promise<TestDb> {
   const db = await createTestDb(label);
-  cleanup.push(() => db.drop());
+  const drop = () => db.drop();
+  cleanup.push(drop);
+  mustPass.add(drop);
   return db;
 }
 

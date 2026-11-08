@@ -332,6 +332,12 @@ describe("queries", () => {
     expect(pages).toBe(3);
     expect((await call(base, "GET", `/wallets/${walletId}/ledger?cursor=garbage`)).status).toBe(400);
     expect((await call(base, "GET", `/wallets/${walletId}/ledger?limit=500`)).status).toBe(400);
+    // a version past the integer column is a bad cursor (400), never a database error (Ld-03)
+    const cursorOf = (v: number) => Buffer.from(JSON.stringify({ v })).toString("base64url");
+    expect((await call(base, "GET", `/wallets/${walletId}/ledger?cursor=${cursorOf(2147483647)}`)).status).toBe(200);
+    for (const v of [2147483648, Number.MAX_SAFE_INTEGER]) {
+      expect((await call(base, "GET", `/wallets/${walletId}/ledger?cursor=${cursorOf(v)}`)).status).toBe(400);
+    }
   });
 });
 

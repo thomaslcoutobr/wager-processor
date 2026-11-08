@@ -61,17 +61,24 @@ describe("three application processes at the same time (section 13, test 4)", ()
     );
     const g = gate();
     const ops: Promise<unknown>[] = [];
+    // every HTTP answer of the burst is checked, not only the final state (Ld-04)
+    const statuses: number[] = [];
+    const post = async (u: string, body: unknown, key: string) => {
+      const r = await call(u, "POST", "/wagering/transactions", body, { "Idempotency-Key": key });
+      statuses.push(r.status);
+      return r;
+    };
     for (const [wi, w] of wallets.entries()) {
       // the SAME bet sent to the three instances at once
       const same = wagerBody({ ...w, amount: "7.00" });
       for (let i = 0; i < 3; i++) {
-        ops.push(g.wait.then(() => call(url(i), "POST", "/wagering/transactions", same.body, { "Idempotency-Key": same.key })));
+        ops.push(g.wait.then(() => post(url(i), same.body, same.key)));
       }
       // competing bets and wins, round-robin over the instances (some bets will run out of funds)
       for (let k = 0; k < 15; k++) {
         const kind = k % 3 === 0 ? "WIN" : "BET";
         const req = wagerBody({ ...w, kind, amount: kind === "WIN" ? "5.00" : "10.00" });
-        ops.push(g.wait.then(() => call(url(wi + k), "POST", "/wagering/transactions", req.body, { "Idempotency-Key": req.key })));
+        ops.push(g.wait.then(() => post(url(wi + k), req.body, req.key)));
       }
       // a refund that arrives (on one instance) before its bet (on another)
       const betId = `bet-${crypto.randomUUID()}`;
@@ -79,8 +86,8 @@ describe("three application processes at the same time (section 13, test 4)", ()
       const bet = wagerBody({ ...w, externalTransactionId: betId, amount: "3.00" });
       ops.push(
         g.wait.then(async () => {
-          await call(url(wi), "POST", "/wagering/transactions", refund.body, { "Idempotency-Key": refund.key });
-          await call(url(wi + 1), "POST", "/wagering/transactions", bet.body, { "Idempotency-Key": bet.key });
+          await post(url(wi), refund.body, refund.key);
+          await post(url(wi + 1), bet.body, bet.key);
         }),
       );
       // queue traffic, consumed by whichever instance gets it
@@ -91,6 +98,9 @@ describe("three application processes at the same time (section 13, test 4)", ()
     }
     g.open();
     await Promise.all(ops);
+    // 200 applied, 202 refund waiting for its bet, 422 out of funds; never 400, 409 or 5xx
+    expect(statuses.length).toBe(wallets.length * 20);
+    expect(statuses.filter((s) => ![200, 202, 422].includes(s))).toEqual([]);
 
     // eventual state: queue drained, no reversal left waiting, every event published
     await waitFor(async () => {

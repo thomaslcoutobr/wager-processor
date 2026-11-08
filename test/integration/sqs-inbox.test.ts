@@ -92,6 +92,10 @@ describe("SQS consumer", () => {
     await sendRaw(queues.urls.main, JSON.stringify(requestedEnvelope(m.data)), w.walletId);
     await waitQueueEmpty();
     expect((await call(base, "GET", `/wallets/${w.walletId}`)).body.balance.amount).toBe("85.00");
+    // an empty queue alone would also pass if the message had been dead-lettered (Ld-05)
+    expect(await receiveAll(queues.urls.dlq, { waitS: 1 })).toHaveLength(0);
+    const metrics = await (await fetch(`${base}/metrics`)).text();
+    expect(metrics).toMatch(/wager_duplicates_total\{source="sqs",kind="idempotency"\} [1-9]/);
   });
 
   it("a business rejection is terminal: recorded REJECTED and acked (not DLQ)", async () => {

@@ -59,7 +59,8 @@ export async function submitUntilFinal(
         body: JSON.stringify(body),
       });
       const parsed = await res.json();
-      if (res.status < 500) return { status: res.status, body: parsed };
+      // a real provider may also resend a 500 (ARCHITECTURE §10.2), but here a 500 is a bug: return it so the test sees it
+      if (res.status !== 503) return { status: res.status, body: parsed };
     } catch {
       // instance down or connection dropped mid-flight: unknown outcome, retry the same request
     }
