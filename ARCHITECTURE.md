@@ -1044,6 +1044,7 @@ Testes além da lista mínima da seção 13:
 | REFUND e ROLLBACK: reverte uma vez só, valor igual, tipo de referência permitido, mesma wallet e rodada, mesmo provedor | `test/integration/reversals.test.ts`, `test/concurrency/out-of-order.test.ts` |
 | REFUND pela fila antes da aposta: `PENDING_REFERENCE`, ack, aplicado quando a aposta chega | `test/integration/sqs-inbox.test.ts` |
 | Dois `POST /wallets` iguais ao mesmo tempo (10×10): um 201, nove 409, nunca 500 | `test/concurrency/wallet-creation-race.test.ts` |
+| Rajada HTTP maior que o pool numa wallet: outra wallet e `ready` respondem 503 no prazo, `live` 200, tudo volta depois ([§20](#20-limitações-conhecidas-e-trade-offs)) | `test/concurrency/hot-wallet-burst.test.ts` |
 | Hora da decisão lida depois do lock (o tempo do ledger nunca anda para trás) | `test/integration/clock-after-lock.test.ts` |
 | Ordem dos eventos por wallet entre lotes e entre publishers; publisher com SQS lento tem teto de tempo | `test/integration/outbox-order.test.ts`, `test/integration/outbox-slow-bus.test.ts` |
 | Consumidor com N laços, 1 mensagem por vez, nunca mais que a metade do pool | `test/concurrency/sqs-consumer-loops.test.ts`, `test/unit/config.test.ts` |
@@ -1093,7 +1094,14 @@ a regra de reenvio para o provedor ([§10.2](#102-mapa-de-status)); as variávei
   HTTP numa só wallet também ocupa conexões do pool enquanto espera o lock (R1-02): cada espera dura no
   máximo o `lock_timeout` (5 s) e, com o pool cheio, quem chega desiste em `DB_CONNECT_TIMEOUT_MS`
   (5 s) com 503. O consumidor da fila nunca passa da metade do pool, e há teste disso
-  (`sqs-consumer-loops.test.ts`). Isolar a wallet quente num pool próprio ficou de fora.
+  (`sqs-consumer-loops.test.ts`). **Medido** em `test/concurrency/hot-wallet-burst.test.ts` (pool 10,
+  40 POSTs numa wallet travada, prazo de conexão 2 s no teste, 3 de 3 rodadas iguais): enquanto a
+  rajada segura o pool, um POST em **outra** wallet recebe 503 `DATABASE_UNAVAILABLE` com
+  `Retry-After` em ~2,0 s, o `/health/ready` responde 503 em ~1,0 s e o `/health/live` continua 200;
+  nada pendura e nada dá 500. Da rajada, 10 aplicam depois que o lock sai e 30 recebem 503 (podem ser
+  reenviadas, nada ficou gravado). Com o lock solto, a outra wallet e o `ready` voltam sozinhos. Ou
+  seja: uma wallet quente derruba a vazão da **instância** inteira enquanto dura, e o `ready` em 503 a
+  tira do balanceador. Isolar a wallet quente (pool próprio ou limite de espera por wallet) ficou de fora.
 - **Ordem dos eventos:** garantida por wallet, também entre publishers (Lb-08, §13). O `walletVersion`
   no evento continua lá para o consumidor que quiser conferir.
 - **A transação do publisher fica aberta durante o `SendMessage`.** **[ajuste na F4, H4]** Ela agora tem
