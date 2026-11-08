@@ -3,6 +3,18 @@ import { loadConfig } from "../../src/infrastructure/config";
 
 const base = { DATABASE_URL: "postgres://u:p@localhost:5432/db" };
 
+describe("database timeouts", () => {
+  it("default to 5 s to get a connection and 15 s per query, above the 5 s lock_timeout", () => {
+    const c = loadConfig(base);
+    expect([c.dbConnectTimeoutMs, c.dbQueryTimeoutMs, c.lockTimeoutMs]).toEqual([5_000, 15_000, 5_000]);
+  });
+
+  it("refuse a query timeout that would fire before lock_timeout answers", () => {
+    expect(() => loadConfig({ ...base, LOCK_TIMEOUT_MS: "15000" })).toThrow(/DB_QUERY_TIMEOUT_MS must be greater than LOCK_TIMEOUT_MS/);
+    expect(loadConfig({ ...base, LOCK_TIMEOUT_MS: "15000", DB_QUERY_TIMEOUT_MS: "30000" }).dbQueryTimeoutMs).toBe(30_000);
+  });
+});
+
 describe("consumer concurrency", () => {
   it("defaults to 4 loops, within half of the default pool of 10", () => {
     const c = loadConfig(base);

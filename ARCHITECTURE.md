@@ -615,6 +615,21 @@ SQLSTATE → grupo: `23505` no `INSERT` da transação aborta a transação e o 
 `22P02` e `P0001` (trigger) são bug, porque a validação e o domínio deveriam ter barrado antes. No HTTP
 viram 500 com alerta e nada gravado; na fila viram `FAILED PROCESSING_FAILED` ([§12](#12-consumidor-sqs)).
 
+Erros de rede do driver também são `DATABASE_UNAVAILABLE`, e dois deles só existem porque o cliente tem
+prazo **[ajuste na F4, Lb-06]**. O `pg` vem sem limite nenhum: esperar uma conexão do pool ou a resposta
+de uma consulta podia durar para sempre, e um banco que pendura sem fechar o socket (pausado, ou atrás de
+uma rede que descarta pacotes) deixava o POST sem resposta. Agora:
+- esperar ou abrir uma conexão desiste em `DB_CONNECT_TIMEOUT_MS` (5 s), e o erro é
+  `timeout exceeded when trying to connect`. Isso também limita a fila do pool quando muitos pedidos
+  esperam a mesma wallet (R1-02);
+- cada consulta desiste em `DB_QUERY_TIMEOUT_MS` (15 s) do lado do cliente, e o erro é
+  `Query read timeout`. A config exige que esse prazo seja maior que o `lock_timeout` (5 s), para que
+  a espera de lock responda primeiro com o seu próprio erro;
+- `keepAlive` no socket, para o sistema operacional notar um par que sumiu.
+
+Se o tempo esgotar num `COMMIT` que o servidor chegou a gravar, o cliente recebe 503 e reenvia, e a
+chave de idempotência devolve o resultado gravado. É o mesmo caminho do desfecho desconhecido.
+
 ---
 
 ## 12. Consumidor SQS

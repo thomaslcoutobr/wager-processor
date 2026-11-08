@@ -7,7 +7,7 @@ import {
 
 const SQLSTATE = /^[0-9A-Z]{5}$/;
 const NETWORK_CODES = new Set(["ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "EPIPE", "ENOTFOUND", "EAI_AGAIN", "EHOSTUNREACH"]);
-const NETWORK_MESSAGES = /timeout exceeded when trying to connect|Connection terminated|connection is closed|Client has encountered a connection error/i;
+const NETWORK_MESSAGES = /timeout exceeded when trying to connect|Query read timeout|Connection terminated|connection is closed|Client has encountered a connection error/i;
 const BUG_STATES = new Set(["23514", "23503", "23502", "22P02", "22003", "P0001"]);
 
 interface DriverLike {

@@ -4,6 +4,8 @@ export interface AppConfig {
   port: number;
   databaseUrl: string;
   dbPoolMax: number;
+  dbConnectTimeoutMs: number;
+  dbQueryTimeoutMs: number;
   lockTimeoutMs: number;
   logLevel: string;
   shutdownGraceMs: number;
@@ -50,6 +52,12 @@ export function loadConfig(env: Env = process.env): AppConfig {
   const databaseUrl = env.DATABASE_URL;
   if (!databaseUrl) throw new Error("DATABASE_URL is required");
   const dbPoolMax = int(env, "DB_POOL_MAX", 10, 1);
+  const lockTimeoutMs = int(env, "LOCK_TIMEOUT_MS", 5_000, 1);
+  // a lock wait is a query too: the client-side timeout must leave room for lock_timeout to answer first
+  const dbQueryTimeoutMs = int(env, "DB_QUERY_TIMEOUT_MS", 15_000, 1);
+  if (dbQueryTimeoutMs <= lockTimeoutMs) {
+    throw new Error(`DB_QUERY_TIMEOUT_MS must be greater than LOCK_TIMEOUT_MS (${lockTimeoutMs}), got ${dbQueryTimeoutMs}`);
+  }
   // each consumer loop can hold a connection while it waits on a wallet lock: at most half of the
   // pool goes to them, the rest stays for HTTP and the two pollers (ARCHITECTURE §12)
   const consumerConcurrency = int(env, "SQS_CONSUMER_CONCURRENCY", 4, 1);
@@ -62,7 +70,9 @@ export function loadConfig(env: Env = process.env): AppConfig {
     port: int(env, "PORT", 3000),
     databaseUrl,
     dbPoolMax,
-    lockTimeoutMs: int(env, "LOCK_TIMEOUT_MS", 5_000, 1),
+    dbConnectTimeoutMs: int(env, "DB_CONNECT_TIMEOUT_MS", 5_000, 1),
+    dbQueryTimeoutMs,
+    lockTimeoutMs,
     logLevel: env.LOG_LEVEL ?? "info",
     shutdownGraceMs: int(env, "SHUTDOWN_GRACE_MS", 8_000),
     failpoints: env.FAILPOINTS ?? "",

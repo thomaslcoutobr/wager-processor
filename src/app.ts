@@ -74,7 +74,12 @@ export interface Container {
 export async function buildContainer(config: AppConfig, overrides: AppOverrides = {}): Promise<Container> {
   const failpoints =
     overrides.failpoints ?? new Failpoints(config.failpoints, { allowInProduction: false, nodeEnv: config.nodeEnv });
-  const orm = await createOrm({ url: config.databaseUrl, poolMax: config.dbPoolMax });
+  const orm = await createOrm({
+    url: config.databaseUrl,
+    poolMax: config.dbPoolMax,
+    connectTimeoutMs: config.dbConnectTimeoutMs,
+    queryTimeoutMs: config.dbQueryTimeoutMs,
+  });
   const metrics = new PromMetrics();
   const clock = overrides.clock ?? new SystemClock();
   const ids = overrides.ids ?? new UuidV7Generator();
