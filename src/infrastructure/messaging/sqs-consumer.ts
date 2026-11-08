@@ -30,6 +30,10 @@ export interface ConsumerConfig {
 
 /** Pause between empty receives when the long poll is capped down to 0 s (short grace), so a loop never spins. */
 const IDLE_SHORT_POLL_MS = 100;
+/** While the database is down: first probe after 500 ms, then doubling up to 5 s; each probe gives up after 1 s. */
+const PROBE_BASE_MS = 500;
+const PROBE_MAX_MS = 5_000;
+const PROBE_TIMEOUT_MS = 1_000;
 
 const sleep = (ms: number, signal: AbortSignal) =>
   new Promise<void>((resolve) => {
@@ -53,6 +57,9 @@ const sleep = (ms: number, signal: AbortSignal) =>
  * redrive limit without ever being tried. With one per receive, FIFO itself keeps the rest of the
  * group back while its head is in flight (also during the retry backoff), and the other loops keep
  * applying other wallets in parallel.
+ *
+ * A DATABASE_UNAVAILABLE pauses every loop until a probe reaches Postgres again: a receive during an
+ * outage would only spend one of the message's attempts, and a long outage would dead-letter them all.
  */
 export class SqsConsumer implements BackgroundJob {
   readonly name = "sqs-consumer";
@@ -63,6 +70,8 @@ export class SqsConsumer implements BackgroundJob {
   private hardStop = new AbortController();
   private loops: Promise<void>[] = [];
   private readonly held = new Map<string, string>(); // SQS MessageId → receipt handle
+  /** Set while the database is down; every loop waits on it before the next receive. */
+  private databaseBack: Promise<void> | undefined;
 
   constructor(
     private readonly sqs: SQSClient,
@@ -72,6 +81,8 @@ export class SqsConsumer implements BackgroundJob {
     private readonly metrics: PromMetrics,
     private readonly failpoints: FailpointPort,
     private readonly log: Logger,
+    /** Resolves when Postgres answers (the readiness check), rejects otherwise. */
+    private readonly databaseProbe: () => Promise<void>,
     private readonly random: () => number = Math.random,
   ) {}
 
@@ -127,6 +138,10 @@ export class SqsConsumer implements BackgroundJob {
     const waitS = this.pollWaitS();
     let failures = 0;
     while (!this.stopping) {
+      if (this.databaseBack) {
+        await this.databaseBack;
+        continue;
+      }
       let msg: Message | undefined;
       try {
         const res = await this.sqs.send(
@@ -169,6 +184,40 @@ export class SqsConsumer implements BackgroundJob {
     }
   }
 
+  /** Opens the pause once, however many loops hit the outage; it ends when a probe succeeds or on stop. */
+  private pauseUntilDatabaseIsBack(): void {
+    if (this.databaseBack) return;
+    this.metrics.sqsConsumerPaused.set(1);
+    this.log("warn", "database unavailable: consumer paused, messages wait in the queue");
+    this.databaseBack = this.probeUntilUp().finally(() => {
+      this.databaseBack = undefined;
+      this.metrics.sqsConsumerPaused.set(0);
+    });
+  }
+
+  private async probeUntilUp(): Promise<void> {
+    let delay = PROBE_BASE_MS;
+    while (!this.stopping) {
+      await sleep(delay, this.wake.signal);
+      if (this.stopping) return;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          this.databaseProbe(),
+          new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new Error("probe timeout")), PROBE_TIMEOUT_MS);
+          }),
+        ]);
+        this.log("info", "database is back: consumer resumed");
+        return;
+      } catch {
+        delay = Math.min(PROBE_MAX_MS, delay * 2);
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+  }
+
   /** Runs in its own log context (messageId, correlationId…). */
   private processOne(msg: Message): Promise<void> {
     return withLogContext({ sqsMessageId: msg.MessageId }, () => this.processInContext(msg));
@@ -202,6 +251,8 @@ export class SqsConsumer implements BackgroundJob {
         }
         return;
       }
+
+      if (outcome.action === "retry" && outcome.reason === "DATABASE_UNAVAILABLE") this.pauseUntilDatabaseIsBack();
 
       if (outcome.action === "retry" && receiveCount < this.cfg.maxReceiveCount) {
         const ceiling = Math.min(this.cfg.retryMaxMs, this.cfg.retryBaseMs * 2 ** (receiveCount - 1));

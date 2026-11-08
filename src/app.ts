@@ -86,14 +86,12 @@ export async function buildContainer(config: AppConfig, overrides: AppOverrides 
   const queues = new QueueDirectory(sqs);
   const realBus = new SqsEventBus(sqs, queues, config.sqs.eventsQueueName);
   const eventBus = overrides.wrapEventBus ? overrides.wrapEventBus(realBus) : realBus;
+  const postgresProbe = async () => {
+    await orm.em.fork().execute("select 1");
+  };
   // readiness = Postgres and SQS reachable (inbound queue and events queue), 1 s each
   const health = new HealthChecks([
-    {
-      name: "postgres",
-      check: async () => {
-        await orm.em.fork().execute("select 1");
-      },
-    },
+    { name: "postgres", check: postgresProbe },
     { name: "sqs", check: () => queues.probe(config.sqs.queueName, 1_000) },
     { name: "sqs-events", check: () => eventBus.check() },
   ]);
@@ -134,6 +132,7 @@ export async function buildContainer(config: AppConfig, overrides: AppOverrides 
     metrics,
     failpoints,
     log,
+    postgresProbe,
     random,
   );
   // the jobs stop in parallel, each one draining only its unit in flight: whatever the consumer still

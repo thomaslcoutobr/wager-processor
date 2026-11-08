@@ -56,6 +56,11 @@ export class PromMetrics implements Metrics {
     labelNames: ["reason"] as const,
     registers: [this.registry],
   });
+  readonly sqsConsumerPaused = new Gauge({
+    name: "sqs_consumer_paused",
+    help: "1 while the SQS consumer waits for the database to come back, 0 otherwise",
+    registers: [this.registry],
+  });
   readonly outboxPending = new Gauge({
     name: "outbox_pending",
     help: "Outbox rows not yet published",

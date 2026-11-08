@@ -642,6 +642,14 @@ viram 500 com alerta e nada gravado; na fila viram `FAILED PROCESSING_FAILED` ([
 | Transitório (grupo E, ou erro desconhecido) com `ApproximateReceiveCount < 5` | `ChangeMessageVisibility` com backoff exponencial e jitter total (base 1 s, teto 30 s). O teto é baixo porque, no FIFO, a mensagem em backoff segura a wallet inteira. |
 | Transitório na 5ª tentativa | DLQ com motivo `RETRY_LIMIT_EXCEEDED` e apaga, **sem gravar nada**. Depois do incidente, a mensagem pode voltar da DLQ para a fila (redrive): o processamento é idempotente, então reprocessar é seguro. |
 
+**Banco fora [ajuste na F4, Lb-02].** Cada recebimento conta para o limite do redrive. Com o backoff da
+tabela, a mensagem gastava as 5 tentativas em no máximo 15 s e ia para a DLQ: uma queda longa do
+Postgres mandaria tudo o que chegasse para lá. Agora o primeiro `DATABASE_UNAVAILABLE` pausa todos os
+laços da instância. Uma sonda (o mesmo `select 1` da readiness, com prazo de 1 s) roda a cada
+0,5 s, dobrando até 5 s, e os laços só voltam a receber quando ela passa. Cada mensagem em voo na hora
+da queda gasta 1 tentativa, e as outras nenhuma. O `lock_timeout` não pausa nada, porque é de uma
+wallet só.
+
 O redrive automático do SQS (`maxReceiveCount = 5`) fica como rede: se o processo morrer cinco vezes
 na mesma mensagem antes de tratá-la, o próprio SQS a move para a DLQ. Ele não incrementa a contagem
 num `ChangeMessageVisibility` **[medido]**.
@@ -813,7 +821,7 @@ integração e concorrência terminam rodando essa reconciliação em cada walle
 | Depois do commit, antes do ack SQS | efeito + inbox | a mensagem volta depois da visibilidade → inbox detecta → ack |
 | No publisher, depois do `SendMessage`, antes do commit | evento na fila e linha ainda pendente | outro publisher republica; dedup no FIFO e no consumidor |
 | No publisher, antes do `SendMessage` | linha pendente | outro publisher pega (o lock cai com a conexão) |
-| Postgres fora | — | HTTP 503; consumidor em backoff; `ready` 503; volta sozinho |
+| Postgres fora | — | HTTP 503; `ready` 503; o consumidor **pausa** os laços no 1º `DATABASE_UNAVAILABLE` (métrica `sqs_consumer_paused` = 1) e sonda o banco a cada 0,5 s a 5 s; as mensagens esperam na fila sem gastar tentativa, e ele volta sozinho **[ajuste na F4, Lb-02]** |
 | SQS fora | o POST HTTP continua funcionando; a outbox acumula | publisher em backoff; `outbox_lag_seconds` sobe; `ready` 503 |
 | SIGTERM | dreno ou devolução de visibilidade ([§12](#12-consumidor-sqs)) | outra instância continua |
 | SIGKILL / OOM | igual à queda antes ou depois do commit | visibilidade expira e a mensagem volta |
