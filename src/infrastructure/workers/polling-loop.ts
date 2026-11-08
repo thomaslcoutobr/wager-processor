@@ -2,7 +2,9 @@ import { jitter } from "../../domain/pending-reference-policy";
 
 /**
  * Runs `tick` forever with a jittered pause between runs (never overlapping itself).
- * `stop()` waits for the tick in flight, so shutdown never cuts a transaction in half.
+ * `stop()` waits for the tick in flight, so shutdown never cuts a transaction in half. A tick that
+ * does several units of work checks `stopping()` between them, so the drain waits for one unit
+ * and not for the whole backlog.
  */
 export class PollingLoop {
   private timer: ReturnType<typeof setTimeout> | undefined;
@@ -11,7 +13,7 @@ export class PollingLoop {
 
   constructor(
     private readonly intervalMs: number,
-    private readonly tick: () => Promise<void>,
+    private readonly tick: (stopping: () => boolean) => Promise<void>,
     private readonly onError: (err: unknown) => void,
     private readonly random: () => number = Math.random,
   ) {}
@@ -31,7 +33,7 @@ export class PollingLoop {
   private schedule(delayMs: number): void {
     if (!this.running) return;
     this.timer = setTimeout(() => {
-      this.inFlight = this.tick()
+      this.inFlight = this.tick(() => !this.running)
         .catch(this.onError)
         .finally(() => {
           this.inFlight = undefined;

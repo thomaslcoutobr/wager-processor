@@ -136,7 +136,8 @@ export async function buildContainer(config: AppConfig, overrides: AppOverrides 
     log,
     random,
   );
-  // stop order matters: the consumer drains first (it feeds the others), then the pollers
+  // the jobs stop in parallel, each one draining only its unit in flight: whatever the consumer still
+  // commits (outbox rows, new pendings) stays in the database for the pollers of the next instance
   const jobs: BackgroundJob[] = [];
   if (config.enable.consumer) jobs.push(consumer);
   if (config.enable.pendingWorker) jobs.push({ name: "pending-reference-worker", start: () => pendingWorker.start(), stop: () => pendingWorker.stop() });

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { call, wagerBody } from "../helpers/app";
-import { waitFor } from "../helpers/locks";
+import { call, createWallet, postWager, startApp, wagerBody } from "../helpers/app";
+import { backendsWaitingOnLock, holdWalletLock, waitFor } from "../helpers/locks";
 import { spawnApp } from "../helpers/spawn";
 import { createTestQueues, queueDepth, requestedEnvelope, sendRaw, type TestQueues } from "../helpers/sqs";
 import { createTestDb, type TestDb } from "../helpers/test-db";
@@ -73,4 +73,73 @@ describe("SIGTERM", () => {
       expect(await next.exited).toBe(0);
     }
   });
+
+  // Lb-07: the pollers check the stop between units of work, so the drain waits for one batch or one
+  // candidate, never for the whole backlog (which ended at the hard stop with exit code 1).
+  it("with an outbox backlog, the publisher stops after the batch in flight and the exit code is 0", async () => {
+    const writer = await startApp(db, { env: { ...queues.env } }); // publisher off: the outbox piles up
+    try {
+      for (let i = 0; i < 30; i++) {
+        await Promise.all(Array.from({ length: 10 }, () => createWallet(writer.baseUrl, "100.00")));
+      }
+    } finally {
+      await writer.close();
+    }
+    const backlog = async () => (await db.app`select count(*)::int as n from outbox_messages where published_at is null`)[0].n as number;
+    expect(await backlog()).toBeGreaterThanOrEqual(300);
+
+    // 200 ms per event, so each batch of 10 takes ~2 s and the whole backlog far more than the grace
+    const app = await spawnApp({
+      ...env(),
+      ENABLE_SQS_CONSUMER: "false",
+      ENABLE_OUTBOX_PUBLISHER: "true",
+      FAILPOINTS: "outbox.after_send_before_commit=delay:200",
+    });
+    await waitFor(async () => (await db.app`select count(*)::int as n from outbox_messages where published_at is not null`)[0].n > 0, 20_000);
+    const started = Date.now();
+    app.kill("SIGTERM");
+    expect(await app.exited).toBe(0);
+    expect(Date.now() - started).toBeLessThan(6_000);
+    expect(await backlog()).toBeGreaterThan(0); // the rest stays for the next instance
+  }, 90_000);
+
+  it("with pending reversals stuck on a locked wallet, the pending worker stops after the candidate in flight and the exit code is 0", async () => {
+    // base delay of 1 ms: all 20 are already due when the worker starts, so they all land in its first batch
+    const writer = await startApp(db, { env: { ...queues.env, PENDING_REFERENCE_BASE_DELAY_MS: "1" } });
+    const playerId = crypto.randomUUID();
+    let walletId = "";
+    try {
+      walletId = await createWallet(writer.baseUrl, "100.00", playerId);
+      for (let i = 0; i < 20; i++) {
+        const r = await postWager(writer.baseUrl, {
+          walletId,
+          playerId,
+          kind: "REFUND",
+          amount: "1.00",
+          referenceExternalTransactionId: `never-${crypto.randomUUID()}`,
+        });
+        expect(r.status).toBe(202);
+      }
+    } finally {
+      await writer.close();
+    }
+    const lock = await holdWalletLock(db.owner, walletId);
+    try {
+      const app = await spawnApp({
+        ...env(),
+        ENABLE_SQS_CONSUMER: "false",
+        ENABLE_PENDING_WORKER: "true",
+        PENDING_REFERENCE_BASE_DELAY_MS: "1",
+        PENDING_POLL_MS: "50",
+        LOCK_TIMEOUT_MS: "2000",
+      });
+      await waitFor(async () => (await backendsWaitingOnLock(db.app)) >= 1, 15_000);
+      const started = Date.now();
+      app.kill("SIGTERM");
+      expect(await app.exited).toBe(0);
+      expect(Date.now() - started).toBeLessThan(6_000); // one lock wait (2 s), not 20 of them
+    } finally {
+      await lock.release();
+    }
+  }, 90_000);
 });

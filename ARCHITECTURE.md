@@ -654,6 +654,9 @@ terminarem voltam com visibilidade 0 para outra instância pegar na hora. O dren
 mensagem em voo cairia num pool fechado (bug reproduzido na pesquisa **[medido]**). O
 `stop_grace_period` do compose (20 s) é maior que o grace. O app sobe como PID 1 em forma exec e sai
 com código 0 no `docker compose stop`, em 0,9 a 3,6 s conforme o ponto do long poll **[medido na F4]**.
+Os dois pollers (outbox e pendências) olham a parada entre um lote e outro, e entre uma candidata e
+outra: o dreno espera só a unidade em voo, e o resto fica para a próxima instância. Antes, um backlog
+fazia o dreno esperar o tick inteiro e cair no prazo duro com código 1 **[ajuste na F4, Lb-07]**.
 
 **[ajuste na F4] Uma mensagem por recebimento, em N laços.** A revisão provou com teste que o lote de
 até 10 punha dinheiro válido na DLQ sem tentativa. O SQS conta **recebimentos**, não tentativas: o lote

@@ -22,7 +22,7 @@ export class PendingReferenceWorker {
     private readonly opts: { pollMs: number; batchSize: number },
     private readonly log: WorkerLogger,
   ) {
-    this.loop = new PollingLoop(opts.pollMs, () => this.runOnce().then(() => undefined), (err) =>
+    this.loop = new PollingLoop(opts.pollMs, (stopping) => this.runOnce(stopping).then(() => undefined), (err) =>
       this.log("error", "pending worker tick failed", { err: String(err) }),
     );
   }
@@ -36,10 +36,11 @@ export class PendingReferenceWorker {
   }
 
   /** One pass over the due candidates. Exposed so tests can drive the worker deterministically. */
-  async runOnce(): Promise<Record<string, number>> {
+  async runOnce(stopping: () => boolean = () => false): Promise<Record<string, number>> {
     const counts: Record<string, number> = {};
     const due = await this.read.findDuePending(this.clock.now(), this.opts.batchSize);
     for (const c of due) {
+      if (stopping()) break; // SIGTERM: the rest stays due for the next instance
       let outcome: string;
       try {
         outcome = await withLogContext({ transactionId: c.id, walletId: c.walletId, causationId: c.id }, () =>

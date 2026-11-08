@@ -18,7 +18,7 @@ export class OutboxPublisherWorker implements BackgroundJob {
     private readonly opts: { pollMs: number; batchSize: number },
     private readonly log: Logger,
   ) {
-    this.loop = new PollingLoop(opts.pollMs, () => this.tick(), (err) => this.log("error", "outbox tick failed", { err: String(err) }));
+    this.loop = new PollingLoop(opts.pollMs, (stopping) => this.tick(stopping), (err) => this.log("error", "outbox tick failed", { err: String(err) }));
   }
 
   start(): void {
@@ -44,8 +44,8 @@ export class OutboxPublisherWorker implements BackgroundJob {
   }
 
   /** Keeps going while batches come back full, so a backlog drains without waiting a poll per batch. */
-  private async tick(): Promise<void> {
-    for (let i = 0; i < 50; i++) {
+  private async tick(stopping: () => boolean): Promise<void> {
+    for (let i = 0; i < 50 && !stopping(); i++) {
       if ((await this.runOnce()) < this.opts.batchSize) return;
     }
   }
