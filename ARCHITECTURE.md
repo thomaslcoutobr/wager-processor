@@ -121,8 +121,10 @@ reconstrói o estado persistido, sem revalidar transições (seção 6.0 do enun
 
 ### 4.2 Wallet (aggregate root)
 
-- `Wallet.open({ id, playerId, initialBalance, at })` devolve a wallet com `version = 1` e, se o saldo
-  inicial for maior que zero, o lançamento `CREDIT` da abertura (de 0,00 até o saldo inicial, `wallet_version = 1`).
+- `Wallet.open({ id, playerId, initialBalance, at, openingTransactionId, openingEntryId })` devolve
+  `{ wallet, openingEntry? }`: a wallet com `version = 1` e, se o saldo inicial for maior que zero, o
+  lançamento `CREDIT` da abertura (de 0,00 até o saldo inicial, `wallet_version = 1`). A assinatura
+  difere do enunciado de propósito ([§4.6](#46-assinaturas-adaptadas-do-enunciado)).
 - `debit(money, transactionId, at)` e `credit(...)` devolvem um resultado, não lançam exceção para
   regra de negócio: `{ ok: true, entry }` ou `{ ok: false, reason: 'INSUFFICIENT_FUNDS' | 'BALANCE_LIMIT_EXCEEDED' }`. Saldo
   insuficiente é desfecho normal do protocolo, não erro de programação.
@@ -174,8 +176,9 @@ e lança erro se não fechar. O banco repete a conta num `CHECK`.
 
 - `InboxMessage.receive({ consumerName, messageId, payloadHash, at })` e `markProcessed(at)`. Como a
   inbox é gravada na mesma transação do efeito, ela é gravada já processada.
-- `OutboxMessage.enqueue(event)` guarda o envelope `event.toJSON()` em `jsonb`. `scheduleRetry(now)`
-  incrementa `attempts` e calcula `nextAttemptAt = now + min(300 s, 2^attempts s) × jitter(0,5..1)`.
+- `OutboxMessage.enqueue(event, { messageGroupId })` guarda o envelope `event.toJSON()` em `jsonb`.
+  `scheduleRetry(now, error, random?)` incrementa `attempts`, guarda o erro (até 500 caracteres) e
+  calcula `nextAttemptAt = now + min(300 s, 2^attempts s) × jitter(0,5..1)`.
 - `IntegrationEvent<T>` é a classe abstrata do enunciado; cada evento é uma subclasse com `eventType` e
   `version` no tipo. `data` só carrega `MoneyProps` (string).
 
@@ -188,6 +191,19 @@ e lança erro se não fechar. O banco repete a conta num `CHECK`.
 
 Todo evento leva `correlationId` (do header `X-Correlation-Id`, da mensagem SQS ou gerado) e
 `causationId` (o `messageId` da fila, o id da requisição ou o id da transação pendente).
+
+### 4.6 Assinaturas adaptadas do enunciado
+
+A seção 6 do enunciado diz que nomes e assinaturas podem ser adaptados, desde que as garantias fiquem.
+Onde o código difere do esqueleto, o motivo é um destes três:
+
+| Enunciado | Código | Por quê |
+|---|---|---|
+| `Wallet.open(...)`: `Wallet` | `Wallet.open({ ..., openingTransactionId, openingEntryId })`: `{ wallet, openingEntry? }` | O saldo inicial precisa nascer com lançamento (saldo = soma do ledger desde a versão 1). O domínio não gera id (a porta `IdGenerator` fica na aplicação), então os ids entram prontos, e o lançamento sai junto para ser gravado na mesma transação. |
+| `markProcessed(ref, at)`, `markPendingReference()`, `reject(code)`, `fail(code)` | os mesmos métodos, recebendo um objeto (`{ referenceTransactionId?, resultBalance, at }`, `{ code, resultBalance, at }`...) | Toda transição grava o `resultBalance` e o instante (a resposta e o replay devolvem o saldo daquele momento). Com 3 ou 4 argumentos, objeto nomeado evita trocar a ordem sem o compilador ver. |
+| `ledgerDirectionFor(): LedgerDirection` | `ledgerDirectionFor(reference?): LedgerDirection \| undefined` | `LOSS` não move saldo (não há direção) e a direção do `ROLLBACK` depende da operação revertida. |
+| `roundId` e `gameId` obrigatórios | opcionais no domínio | Só o `OPENING` interno não tem rodada nem jogo; a API e a fila continuam exigindo os dois nas operações do provedor. |
+| `OutboxMessage.enqueue(event)`, `scheduleRetry(now)` | `enqueue(event, { messageGroupId })`, `scheduleRetry(now, error, random?)` | O grupo FIFO (a wallet) é decidido por quem gera o evento; o erro fica guardado para diagnóstico; o `random` injetável deixa o jitter determinístico no teste. |
 
 ---
 
@@ -1019,6 +1035,26 @@ paralelo não foi medido e não é o caminho documentado.
 | 7. REFUND ou ROLLBACK antes da referência | `test/concurrency/out-of-order.test.ts` |
 | 8. Reinício com consistência final comprovada | `test/concurrency/restart.test.ts` |
 
+Testes além da lista mínima da seção 13:
+
+| O que prova | Onde |
+|---|---|
+| Saldo = soma do ledger e a cadeia de **todas** as wallets, conferidos ao apagar o banco de **todo** arquivo de teste (o arquivo falha se não fechar) | `test/helpers/test-db.ts`, provado em `test/integration/test-db-invariant.test.ts` |
+| Contrato HTTP de ponta a ponta (criação, consulta, 400, 404, 409, 422, replay) | `test/integration/wagering-http.test.ts` |
+| REFUND e ROLLBACK: reverte uma vez só, valor igual, tipo de referência permitido, mesma wallet e rodada, mesmo provedor | `test/integration/reversals.test.ts`, `test/concurrency/out-of-order.test.ts` |
+| REFUND pela fila antes da aposta: `PENDING_REFERENCE`, ack, aplicado quando a aposta chega | `test/integration/sqs-inbox.test.ts` |
+| Dois `POST /wallets` iguais ao mesmo tempo (10×10): um 201, nove 409, nunca 500 | `test/concurrency/wallet-creation-race.test.ts` |
+| Hora da decisão lida depois do lock (o tempo do ledger nunca anda para trás) | `test/integration/clock-after-lock.test.ts` |
+| Ordem dos eventos por wallet entre lotes e entre publishers; publisher com SQS lento tem teto de tempo | `test/integration/outbox-order.test.ts`, `test/integration/outbox-slow-bus.test.ts` |
+| Consumidor com N laços, 1 mensagem por vez, nunca mais que a metade do pool | `test/concurrency/sqs-consumer-loops.test.ts`, `test/unit/config.test.ts` |
+| Postgres fora por 20 s: a mensagem espera e é aplicada, não vai à DLQ; Postgres pendurado: 503 no prazo | `test/integration/database-outage.test.ts`, `test/integration/database-hang.test.ts` |
+| SIGTERM: dreno, devolução de visibilidade, publisher e worker param entre itens, exit 0 | `test/integration/shutdown.test.ts` |
+| Worker de pendências recua a wallet ocupada e não trava as outras | `test/concurrency/pending-backoff.test.ts` |
+| Reconciliação reporta a divergência feita por papel privilegiado, sem corrigir, com log e métrica | `test/integration/reconciliation.test.ts` |
+| Valor das métricas (status, duplicados, latência, conflito de lock 55P03) e `messageId` no log da fila; log sem body nem valor | `test/integration/observability-values.test.ts`, `test/integration/observability.test.ts` |
+| Fronteira das camadas: domínio e aplicação só importam da lista fechada (sem `@nestjs`, sem `@mikro-orm`) | `test/unit/architecture-boundaries.test.ts` |
+| Atraso da retentativa da fila nunca é 0 s com teto acima de zero | `test/unit/retry-delay.test.ts` |
+
 Como os testes ficam determinísticos:
 
 - asserções sobre **invariantes finais** (1 débito, `saldo = soma do ledger`, contagens), nunca sobre
@@ -1032,8 +1068,7 @@ Como os testes ficam determinísticos:
 - dados novos por teste (wallet e player com UUID novo);
 - os testes de corrida rodam em laço (20 vezes) antes da entrega; um flake é bug do produto.
 
-Diferencial opcional (`bun run test:load`), só se sobrar tempo: ambiente, método, vazão, p50/p95/p99,
-taxa de erro, conflitos de lock e outbox lag, com a análise honesta.
+Diferencial opcional (`bun run test:load`): ver a situação em [§20](#20-limitações-conhecidas-e-trade-offs).
 
 **README** (vale pontos na documentação): pré-requisitos (Docker; o Bun só se for rodar fora do
 container); subir tudo com `docker compose up -d --wait`; rodar os testes com um comando
@@ -1046,6 +1081,11 @@ a regra de reenvio para o provedor ([§10.2](#102-mapa-de-status)); as variávei
 ## 20. Limitações conhecidas e trade-offs
 
 - **Sem autenticação** ([§18](#18-autenticação-ponto-de-extensão)).
+- **Teste de carga (`bun run test:load`) não feito.** É diferencial opcional da seção 14 do enunciado.
+  O que existe é medida pontual: `bun run bench:locking` (lock pessimista contra UPDATE atômico numa
+  wallet quente, [§7.3](#73-por-que-não-as-alternativas)) e `bun run bench:triggers` (custo dos
+  triggers diferidos, [§6.5](#65-o-laço-saldo--ledger-no-banco)). Não há número de vazão, p50/p95/p99
+  nem outbox lag sob carga sustentada.
 - **Uma escala (2 casas) para toda moeda.** O modelo é multimoeda e o conflito de moeda é testado,
   mas moedas de 0 ou 3 casas pediriam escala por moeda.
 - **Wallet quente:** a vazão de uma única wallet é limitada pelo lock da linha. É o preço da correção
