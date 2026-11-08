@@ -489,7 +489,8 @@ CREATE INDEX ix_outbox_due ON outbox_messages (next_attempt_at, id) WHERE publis
 ### 7.1 Estratégia
 
 Toda transação que escreve faz, **como primeiro comando**, `SELECT … FROM wallets WHERE id = $1 FOR UPDATE`
-(`LockMode.PESSIMISTIC_WRITE` no MikroORM), em READ COMMITTED, com `SET LOCAL lock_timeout = '5s'`.
+(`LockMode.PESSIMISTIC_WRITE` no MikroORM), em READ COMMITTED (o padrão do Postgres; o código não
+muda o nível de isolamento), com `SET LOCAL lock_timeout = '5s'`.
 
 - Duas apostas na mesma wallet ficam em fila no lock da linha; a segunda lê o saldo **depois** do
   commit da primeira. Em READ COMMITTED, `SELECT FOR UPDATE` que encontra a linha alterada espera e

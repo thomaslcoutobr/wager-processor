@@ -60,9 +60,9 @@ export function retryDelayS(receiveCount: number, baseMs: number, maxMs: number,
 }
 
 /**
- * Own SQS consumer (~200 lines) so the decisions under evaluation are visible (ARCHITECTURE §12):
+ * Own SQS consumer (~300 lines) so the decisions under evaluation are visible (ARCHITECTURE §12):
  * N receive loops with ONE message per ReceiveMessage, ack only after COMMIT, three error classes,
- * retry by ChangeMessageVisibility with full jitter, DLQ with the reason, graceful drain on SIGTERM.
+ * retry by ChangeMessageVisibility with equal jitter, DLQ with the reason, graceful drain on SIGTERM.
  *
  * One message per receive because SQS counts receives, not attempts: a batch brings the followers of
  * a group along and every hand-back adds to their ApproximateReceiveCount, so they could reach the
