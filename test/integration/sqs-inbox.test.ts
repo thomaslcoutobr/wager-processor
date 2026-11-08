@@ -129,4 +129,28 @@ describe("SQS consumer", () => {
     const metrics = await (await fetch(`${base}/metrics`)).text();
     expect(metrics).toMatch(/sqs_dlq_total\{reason="INVALID_JSON"\} 1/);
   });
+
+  it("a REFUND queued before its BET waits as PENDING_REFERENCE (acked, not retried), then applies once the BET arrives by the queue", async () => {
+    const w = await setup();
+    const betId = `bet-${crypto.randomUUID()}`;
+    const refund = message(w, { kind: "REFUND", amount: "25.00", referenceExternalTransactionId: betId });
+    await sendRaw(queues.urls.main, JSON.stringify(requestedEnvelope(refund.data)), w.walletId);
+    const pending = await waitProcessed(refund.body.externalTransactionId);
+    expect(pending.status).toBe("PENDING_REFERENCE");
+    await waitQueueEmpty(); // acked: the wait lives in the database, not in redeliveries
+    expect((await call(base, "GET", `/wallets/${w.walletId}`)).body.balance.amount).toBe("100.00");
+
+    const bet = message(w, { externalTransactionId: betId, amount: "25.00" });
+    await sendRaw(queues.urls.main, JSON.stringify(requestedEnvelope(bet.data)), w.walletId);
+    const betTx = await waitProcessed(betId);
+    expect(betTx.status).toBe("PROCESSED");
+    expect((await call(base, "GET", `/wallets/${w.walletId}`)).body.balance.amount).toBe("75.00");
+
+    await running.container.pendingWorker.runOnce(); // the BET nudged it: due now
+    const done = (await byExternal(refund.body.externalTransactionId)).body;
+    expect(done).toMatchObject({ status: "PROCESSED", referenceTransactionId: betTx.transactionId });
+    expect((await call(base, "GET", `/wallets/${w.walletId}`)).body.balance.amount).toBe("100.00");
+    expect(await dlqReasons()).toEqual([]);
+    await expectWalletConsistent(db.app, w.walletId);
+  });
 });
