@@ -193,3 +193,55 @@ describe("REFUND/ROLLBACK delivered before their reference (section 13, test 7)"
     }
   });
 });
+
+describe("the reference is resolved only inside the same providerId (section 7, rule 2)", () => {
+  it("another provider's transaction with the same external id is never taken as the reference", async () => {
+    const w = await setup();
+    const sharedId = ext("shared");
+    const betA = await postWager(base, { ...w, providerId: "provider-a", externalTransactionId: sharedId, amount: "25.00" });
+    expect(betA.status).toBe(200);
+
+    // provider-b reverses "its" bet sharedId, which it has not sent yet: it must wait, not undo provider-a's bet
+    const refundB = await postWager(base, {
+      ...w,
+      providerId: "provider-b",
+      kind: "REFUND",
+      amount: "25.00",
+      referenceExternalTransactionId: sharedId,
+    });
+    expect(refundB.status).toBe(202);
+    expect(refundB.body.status).toBe("PENDING_REFERENCE");
+    expect(await balanceOf(w.walletId)).toBe("75.00");
+
+    // the worker's retry looks in the same scope: still pending after a due attempt
+    clock.advance(60_000);
+    await work();
+    const retried = await view(refundB.body.transactionId);
+    expect(retried.status).toBe("PENDING_REFERENCE");
+    expect(retried.attempts).toBeGreaterThanOrEqual(1);
+    expect(await balanceOf(w.walletId)).toBe("75.00");
+
+    // provider-b's own bet arrives: that one is the reference
+    const betB = await postWager(base, { ...w, providerId: "provider-b", externalTransactionId: sharedId, amount: "25.00" });
+    expect(betB.status).toBe(200);
+    await work();
+    expect(await view(refundB.body.transactionId)).toMatchObject({
+      status: "PROCESSED",
+      referenceTransactionId: betB.body.transactionId,
+    });
+    expect(await balanceOf(w.walletId)).toBe("75.00");
+
+    // provider-a's bet was never reversed: its own refund still applies
+    const refundA = await postWager(base, {
+      ...w,
+      providerId: "provider-a",
+      kind: "REFUND",
+      amount: "25.00",
+      referenceExternalTransactionId: sharedId,
+    });
+    expect(refundA.status).toBe(200);
+    expect(refundA.body.balance.amount).toBe("100.00");
+    expect((await view(refundA.body.transactionId)).referenceTransactionId).toBe(betA.body.transactionId);
+    await expectWalletConsistent(db.app, w.walletId);
+  });
+});
