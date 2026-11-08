@@ -91,16 +91,23 @@ export async function buildContainer(config: AppConfig, overrides: AppOverrides 
   const queues = new QueueDirectory(sqs);
   const realBus = new SqsEventBus(sqs, queues, config.sqs.eventsQueueName);
   const eventBus = overrides.wrapEventBus ? overrides.wrapEventBus(realBus) : realBus;
+  // reachable is not enough: a database that reads but refuses writes (a failover window) cannot
+  // process anything, so the consumer stays paused and readiness stays down until it writes again
   const postgresProbe = async () => {
-    await orm.em.fork().execute("select 1");
+    const [row] = await orm.em.fork().execute<{ ro: string }[]>("select current_setting('transaction_read_only') as ro");
+    if (row?.ro !== "off") throw new Error("database is read-only");
   };
   // readiness = Postgres and SQS reachable (inbound queue and events queue), 1 s each
-  const health = new HealthChecks([
-    { name: "postgres", check: postgresProbe },
-    { name: "sqs", check: () => queues.probe(config.sqs.queueName, 1_000) },
-    { name: "sqs-events", check: () => eventBus.check() },
-  ]);
   const log = createLogger(config.logLevel);
+  const health = new HealthChecks(
+    [
+      { name: "postgres", check: postgresProbe },
+      { name: "sqs", check: () => queues.probe(config.sqs.queueName, 1_000) },
+      { name: "sqs-events", check: () => eventBus.check() },
+    ],
+    1_000,
+    (check, error) => log("warn", "readiness check failed", { check, err: error.message }),
+  );
   const resolvePending = new ResolvePendingReference(uow, clock, ids, policy, metrics, random);
   const pendingWorker = new PendingReferenceWorker(
     read,
@@ -220,6 +227,7 @@ export async function createApp(
     bodyParser: false,
     logger: config.logLevel === "silent" ? false : ["error", "warn"],
   });
+  app.getHttpAdapter().getInstance().disable("x-powered-by");
   app.use(requestContext(container.ids, container.log));
   app.use(container.httpDrain.middleware());
   app.use(jsonBody(64 * 1024));

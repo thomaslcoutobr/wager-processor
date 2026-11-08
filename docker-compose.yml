@@ -8,7 +8,7 @@ services:
       POSTGRES_PASSWORD: wager
       POSTGRES_DB: wager
     ports:
-      - "${POSTGRES_HOST_PORT:-5433}:5432"
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5433}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U wager -d wager"]
       interval: 2s
@@ -24,7 +24,7 @@ services:
       AWS_DEFAULT_REGION: us-east-1
       MAX_RECEIVE_COUNT: "5"
     ports:
-      - "${SQS_HOST_PORT:-4566}:4566"
+      - "127.0.0.1:${SQS_HOST_PORT:-4566}:4566"
     volumes:
       - ./docker/ministack/ready.d:/etc/localstack/init/ready.d:ro
     healthcheck:
@@ -67,7 +67,7 @@ services:
       SHUTDOWN_GRACE_MS: "8000"
       LOG_LEVEL: info
     ports:
-      - "${APP_HOST_PORT:-3000}:3000"
+      - "127.0.0.1:${APP_HOST_PORT:-3000}:3000"
     # Must be longer than SHUTDOWN_GRACE_MS so in-flight messages can finish before SIGKILL.
     stop_grace_period: 20s
     depends_on:
@@ -87,13 +87,13 @@ services:
     <<: *app
     profiles: ["multi"]
     ports:
-      - "${APP2_HOST_PORT:-3001}:3000"
+      - "127.0.0.1:${APP2_HOST_PORT:-3001}:3000"
 
   app-3:
     <<: *app
     profiles: ["multi"]
     ports:
-      - "${APP3_HOST_PORT:-3002}:3000"
+      - "127.0.0.1:${APP3_HOST_PORT:-3002}:3000"
 
   # `docker compose run --rm tests` runs the whole suite inside Linux, against the real
   # Postgres and MiniStack above (SIGTERM/SIGKILL semantics match the evaluator's machine).

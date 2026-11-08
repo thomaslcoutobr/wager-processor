@@ -75,9 +75,11 @@ export interface ReadStore {
   findTransactionByKey(providerId: string, idempotencyKey: string): Promise<WagerTransaction | undefined>;
   /** Newest first; `beforeVersion` excludes that version and everything newer. */
   listLedger(walletId: string, beforeVersion: number | undefined, limit: number): Promise<WalletLedgerEntry[]>;
-  /** Candidates only (no lock): PENDING_REFERENCE rows whose next attempt is due. */
-  /** Due PENDING_REFERENCE candidates, oldest first, leaving out `excludeIds` (the worker's back-off). */
-  findDuePending(now: Date, limit: number, excludeIds?: string[]): Promise<Array<{ id: string; walletId: string }>>;
+  /**
+   * Candidates only (no lock): due PENDING_REFERENCE rows, oldest first, leaving out the wallets in
+   * `excludeWalletIds` (the worker's back-off).
+   */
+  findDuePending(now: Date, limit: number, excludeWalletIds?: string[]): Promise<Array<{ id: string; walletId: string }>>;
   findInbox(consumerName: string, messageId: string): Promise<InboxMessage | undefined>;
   /**
    * One statement, one snapshot: stored balance, Σ ledger, entries checked and chain breaks

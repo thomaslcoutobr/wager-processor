@@ -12,15 +12,18 @@ export type WorkerLogger = (level: "info" | "warn" | "error", msg: string, field
  * Scheduled worker for PENDING_REFERENCE (runs in every instance). It reads due candidates without
  * locking; each candidate is decided in its own transaction that locks the wallet first.
  *
- * A transient failure (wallet busy, database down) backs the candidate off in this instance, with
- * the same exponential schedule as the pending itself, and the next passes leave it out of the
- * query. Without that, the same busy candidates would come first in every pass and fill the batch,
- * and the pending reversals of other wallets would never be tried. The back-off lives in memory on
- * purpose: writing it would be a write without the wallet lock, which the design never does.
+ * A transient failure (wallet busy, database down) backs the whole WALLET off in this instance, with
+ * the same exponential schedule as the pending itself: the rest of that wallet's candidates are
+ * skipped in the pass, and the next passes leave the wallet out of the query. So a busy wallet costs
+ * at most one lock_timeout per pass, however many pendings it has, and the pending reversals of other
+ * wallets still get into the batch. Backing off one candidate at a time was not enough: with a real
+ * clock the pass (one lock_timeout per busy candidate) outlasted the back-off, and a wallet with more
+ * pendings than the batch filled it again (R2b-01). The back-off lives in memory on purpose: writing
+ * it would be a write without the wallet lock, which the design never does.
  */
 export class PendingReferenceWorker {
   private readonly loop: PollingLoop;
-  /** transactionId → transient failures in a row and the time (clock ms) before which it is left out */
+  /** walletId → transient failures in a row and the time (clock ms) before which it is left out */
   private readonly backoff = new Map<string, { failures: number; untilMs: number }>();
 
   constructor(
@@ -51,26 +54,32 @@ export class PendingReferenceWorker {
     const counts: Record<string, number> = {};
     const now = this.clock.now();
     const due = await this.read.findDuePending(now, this.opts.batchSize, this.backedOff(now.getTime()));
+    const failedThisPass = new Set<string>();
     for (const c of due) {
       if (stopping()) break; // SIGTERM: the rest stays due for the next instance
+      if (failedThisPass.has(c.walletId)) {
+        // the wallet just failed transiently: trying its other candidates now would only wait again
+        counts.skipped = (counts.skipped ?? 0) + 1;
+        continue;
+      }
       let outcome: string;
       try {
         outcome = await withLogContext({ transactionId: c.id, walletId: c.walletId, causationId: c.id }, () =>
           this.resolve.execute(c.id, c.walletId),
         );
-        this.backoff.delete(c.id);
+        this.backoff.delete(c.walletId);
       } catch (err) {
         if (err instanceof DatabaseInvariantError) {
           // retrying a decision the schema refuses would loop forever: record it as FAILED
           await this.resolve.markFailed(c.id, c.walletId);
-          this.backoff.delete(c.id);
           this.log("error", "pending transaction failed permanently", { transactionId: c.id, walletId: c.walletId, sqlstate: err.sqlstate });
           outcome = "failed";
         } else {
-          // transient: the row is untouched; this instance leaves it out for a while
-          const failures = (this.backoff.get(c.id)?.failures ?? 0) + 1;
+          // transient: the row is untouched; this instance leaves the wallet out for a while
+          const failures = (this.backoff.get(c.walletId)?.failures ?? 0) + 1;
           const untilMs = this.policy.nextAttemptAt(this.clock.now(), failures - 1, this.random).getTime();
-          this.backoff.set(c.id, { failures, untilMs });
+          this.backoff.set(c.walletId, { failures, untilMs });
+          failedThisPass.add(c.walletId);
           this.log("warn", "pending transaction retry deferred", { transactionId: c.id, walletId: c.walletId, failures, err: String(err) });
           outcome = "error";
         }
@@ -82,14 +91,14 @@ export class PendingReferenceWorker {
   }
 
   /**
-   * Ids still inside their back-off. An entry is forgotten one max delay after it ends (the candidate
-   * was decided elsewhere, or simply recovered), so the map stays as small as the trouble.
+   * Wallets still inside their back-off. An entry is forgotten one max delay after it ends (the wallet
+   * was freed, or its pendings were decided elsewhere), so the map stays as small as the trouble.
    */
   private backedOff(nowMs: number): string[] {
     const ids: string[] = [];
-    for (const [id, b] of this.backoff) {
-      if (b.untilMs > nowMs) ids.push(id);
-      else if (b.untilMs + this.policy.maxDelayMs < nowMs) this.backoff.delete(id);
+    for (const [walletId, b] of this.backoff) {
+      if (b.untilMs > nowMs) ids.push(walletId);
+      else if (b.untilMs + this.policy.maxDelayMs < nowMs) this.backoff.delete(walletId);
     }
     return ids;
   }

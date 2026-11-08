@@ -110,7 +110,7 @@ describe("migrations", () => {
                    'BET', 10, 'USD', 'REJECTED', 'CURRENCY_MISMATCH', 50, now(), now())`;
       });
 
-      expect(await migrateUp(old.ownerUrl)).toEqual(["Migration20261108000100_review_hardening", "Migration20261108000200_trigger_integrity"]);
+      expect(await migrateUp(old.ownerUrl)).toEqual(["Migration20261108000100_review_hardening", "Migration20261108000200_trigger_integrity", "Migration20261108000300_outbox_sequence"]);
       const rows = await old.owner`select id, currency, result_currency from wager_transactions order by kind`;
       expect(rows).toEqual([
         { id: rejectedId, currency: "USD", result_currency: "BRL" },

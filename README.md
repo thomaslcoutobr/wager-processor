@@ -14,8 +14,9 @@ arquivo explica como rodar.
 - Docker com Compose v2. Só isso: app, migrations e testes rodam em containers Linux.
 - Bun 1.4.4 só para rodar fora do container (não é o caminho documentado).
 
-Portas usadas no host: 3000 (app), 5433 (Postgres) e 4566 (SQS). Para trocar, use `APP_HOST_PORT`,
-`POSTGRES_HOST_PORT` e `SQS_HOST_PORT`.
+Portas usadas no host: 3000 (app), 5433 (Postgres) e 4566 (SQS), todas presas a `127.0.0.1` (as senhas
+do compose são de desenvolvimento). Para trocar, use `APP_HOST_PORT`, `POSTGRES_HOST_PORT` e
+`SQS_HOST_PORT`.
 
 ## Subir
 
@@ -51,7 +52,7 @@ docker compose --profile test run --rm tests
 
 Roda o `tsc` em modo estrito e depois a suíte inteira (unidade, integração e concorrência) dentro do
 Linux, contra o Postgres e o MiniStack reais do compose. Não há mock de banco nem de fila. Cada arquivo
-de teste cria e apaga o próprio banco. Leva uns 2 minutos.
+de teste cria e apaga o próprio banco. No meu PC a suíte leva cerca de 2 min e meio (medido em 08/11: 350 testes em 148 s).
 
 Um arquivo só:
 
@@ -62,7 +63,12 @@ docker compose --profile test run --rm tests bun test test/concurrency/hot-walle
 A imagem de teste copia o código no build. Depois de mudar o código, rode
 `docker compose --profile test build tests` antes.
 
-Benchmarks (opcionais), no mesmo container: `bun run bench:locking` e `bun run bench:triggers`.
+Benchmarks (opcionais), no container de teste:
+
+```bash
+docker compose --profile test run --rm tests bun run bench:locking
+docker compose --profile test run --rm tests bun run bench:triggers
+```
 
 ## Exemplos de uso
 
@@ -146,7 +152,7 @@ O código HTTP sozinho diz o que fazer:
 | 200 | aplicada | segue |
 | 202 | aceita e pendente (`PENDING_REFERENCE`) | consulta o `Location` ou espera o evento |
 | 422 | rejeitada por regra de negócio (saldo, moeda, referência...); é final | não reenvia |
-| 400 / 404 / 409 | o pedido está errado (payload, wallet inexistente, chave reutilizada) | corrige; não reenvia igual |
+| 400 / 404 / 409 / 413 | o pedido está errado (payload, wallet inexistente, chave reutilizada, corpo acima de 64 KiB) | corrige; não reenvia igual |
 | 503 (com `Retry-After`), outro 5xx ou queda de rede | falha transitória | reenvia **a mesma chave e o mesmo corpo**, com backoff |
 
 O corpo traz `status`, `failureCode` (taxonomia na ARCHITECTURE §11) e `retry` (`NEVER`, `AFTER_FIX`,
@@ -162,20 +168,24 @@ reenvia é o replay de uma transação `FAILED`, que traz `retry: "NEVER"` (ARCH
 | `PORT` | 3000 | porta HTTP |
 | `DB_POOL_MAX` | 10 | conexões no pool |
 | `LOCK_TIMEOUT_MS` | 5000 | espera máxima pelo lock da wallet; passou, 503 `LOCK_TIMEOUT` |
-| `DB_CONNECT_TIMEOUT_MS` / `DB_QUERY_TIMEOUT_MS` | 5000 / 15000 | prazos do cliente do Postgres |
+| `DB_CONNECT_TIMEOUT_MS` / `DB_QUERY_TIMEOUT_MS` | 5000 / 15000 | prazos do cliente do Postgres; o de query tem que ser **maior** que `LOCK_TIMEOUT_MS`, senão o app não sobe |
 | `SQS_ENDPOINT` | vazio (AWS) | endpoint do emulador |
 | `AWS_REGION` | us-east-1 | região |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | cadeia padrão do SDK | credenciais; o compose passa `test`/`test`, que o emulador aceita. Fora do container, defina as duas |
 | `SQS_QUEUE_NAME` / `SQS_DLQ_NAME` | `wager-transactions.fifo` / `wager-transactions-dlq.fifo` | fila de entrada |
 | `SQS_EVENTS_QUEUE_NAME` / `SQS_EVENTS_DLQ_NAME` | `wager-events.fifo` / `wager-events-dlq.fifo` | fila dos eventos |
-| `SQS_CONSUMER_CONCURRENCY` | 4 | laços de recebimento (no máximo metade do pool) |
-| `SQS_VISIBILITY_TIMEOUT_S` / `SQS_WAIT_TIME_S` / `SQS_MAX_RECEIVE_COUNT` | 30 / 20 / 5 | fila de entrada |
+| `SQS_CONSUMER_NAME` | `wager-transactions-consumer` | nome do consumidor na inbox (a deduplicação é por consumidor + `messageId`) |
+| `SQS_CONSUMER_CONCURRENCY` | 4 | laços de recebimento; no máximo metade de `DB_POOL_MAX`, senão o app não sobe |
+| `SQS_VISIBILITY_TIMEOUT_S` / `SQS_WAIT_TIME_S` / `SQS_MAX_RECEIVE_COUNT` | 30 / 20 / 5 | fila de entrada. A espera de cada receive é `min(SQS_WAIT_TIME_S, SHUTDOWN_GRACE_MS / 2)`, 4 s no padrão, para o SIGTERM não esperar um long poll inteiro. `SQS_MAX_RECEIVE_COUNT` tem que ser igual ao `maxReceiveCount` da fila (no compose, `MAX_RECEIVE_COUNT` do serviço `aws`) |
 | `SQS_RETRY_BASE_MS` / `SQS_RETRY_MAX_MS` | 1000 / 30000 | backoff das retentativas |
 | `OUTBOX_POLL_MS` / `OUTBOX_BATCH_SIZE` / `OUTBOX_PASS_BUDGET_MS` | 200 / 10 / 5000 | publisher da outbox |
 | `PENDING_REFERENCE_TTL_SECONDS` | 600 | quanto tempo uma reversão espera a referência |
+| `PENDING_REFERENCE_BASE_DELAY_MS` / `PENDING_REFERENCE_MAX_DELAY_MS` | 1000 / 60000 | backoff de uma pendência que o worker não conseguiu resolver |
 | `PENDING_POLL_MS` / `PENDING_BATCH_SIZE` | 500 / 20 | worker de pendências |
 | `ENABLE_SQS_CONSUMER` / `ENABLE_OUTBOX_PUBLISHER` / `ENABLE_PENDING_WORKER` | true | liga cada papel da instância |
 | `SHUTDOWN_GRACE_MS` | 8000 | prazo do dreno no SIGTERM (o compose dá 20 s antes do SIGKILL) |
 | `LOG_LEVEL` | info | nível do log |
+| `NODE_ENV` | development | a imagem do app usa `production`, a de teste usa `test` |
 | `FAILPOINTS` | vazio | injeção de falha para testes; com `NODE_ENV=production`, o app recusa subir |
 
 ## Logs e métricas

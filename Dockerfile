@@ -15,6 +15,8 @@ FROM deps AS app
 COPY tsconfig.json ./
 COPY src ./src
 ENV NODE_ENV=production
+# the app only reads its files; it runs as the image's unprivileged user, not as root
+USER bun
 EXPOSE 3000
 # exec form: bun is PID 1 and receives SIGTERM directly from `docker stop`.
 CMD ["bun", "src/main.ts"]

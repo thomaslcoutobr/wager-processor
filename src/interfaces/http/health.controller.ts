@@ -14,6 +14,8 @@ export class HealthChecks {
   constructor(
     private readonly checks: HealthCheck[],
     private readonly timeoutMs = 1_000,
+    // the endpoint is open (no auth), so the error text (host, port, user) goes here, never to the body
+    private readonly onFailure: (name: string, error: Error) => void = () => {},
   ) {}
 
   startDraining(): void {
@@ -34,7 +36,8 @@ export class HealthChecks {
           checks[c.name] = "ok";
         } catch (e) {
           ok = false;
-          checks[c.name] = `fail: ${(e as Error).message}`.slice(0, 120);
+          checks[c.name] = "fail";
+          this.onFailure(c.name, e as Error);
         }
       }),
     );

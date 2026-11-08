@@ -79,7 +79,7 @@ describe("outbox publisher", () => {
       bus.failWith = undefined;
     }
     const rows = await db.app`select attempts, last_error, next_attempt_at > now() as later, published_at
-                               from outbox_messages where message_group_id = ${walletId} order by occurred_at, id`;
+                               from outbox_messages where message_group_id = ${walletId} order by seq`;
     // the first failure skips the rest of the same group in that batch (keeps per-wallet order)
     expect(rows[0]).toMatchObject({ attempts: 1, last_error: "Error: sqs down", later: true, published_at: null });
     expect(rows[1]).toMatchObject({ attempts: 0, published_at: null });

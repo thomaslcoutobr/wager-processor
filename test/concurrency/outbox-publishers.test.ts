@@ -51,7 +51,9 @@ describe("two publishers over the same outbox, one dies mid-batch (section 11 + 
       expect(await c.exited).toBe(0);
     }
 
-    // 4. the event A had sent was published again (at least once, on purpose); the consumer is safe
+    // 4. the event A had sent is published again (at least once, on purpose). The FIFO queue may
+    // collapse that copy, since the dedup id is the eventId; this step proves every event arrived and
+    // had one effect. The duplicate that does reach the consumer is in outbox.test.ts.
     const consumer = new ReferenceEventConsumer(db.owner, queues.urls.events);
     await consumer.setup();
     await consumer.drain();

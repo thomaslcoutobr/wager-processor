@@ -160,6 +160,8 @@ class MikroTransactionalStore implements TransactionalStore {
    *     it: a later event is never a head while the head is unpublished.
    *  2. the unpublished events of the claimed groups, oldest first. The publisher stops a group at the
    *     first one that fails or is not due, so a group never publishes out of order.
+   * "Oldest" is `seq`, drawn by the INSERT under the wallet lock, so it follows the order in which the
+   * wallet changed; occurred_at comes from the clock of whichever instance decided (R2b-02).
    * SKIP LOCKED is right for a queue table, wrong for a wallet.
    */
   async claimDueOutbox(now: Date, limit: number): Promise<OutboxMessage[]> {
@@ -168,18 +170,24 @@ class MikroTransactionalStore implements TransactionalStore {
         where o.published_at is null and o.next_attempt_at <= ?
           and not exists (select 1 from outbox_messages p
                            where p.message_group_id = o.message_group_id and p.published_at is null
-                             and (p.occurred_at, p.id) < (o.occurred_at, o.id))
-        order by o.next_attempt_at, o.id
+                             and p.seq < o.seq)
+        order by o.next_attempt_at, o.seq
         limit ?
         for update of o skip locked`,
       [now, limit],
     );
     if (heads.length === 0) return [];
-    const rows = await this.em.find(
-      OutboxMessageRecord,
-      { messageGroupId: { $in: heads.map((h) => h.message_group_id) }, publishedAt: null },
-      { lockMode: LockMode.PESSIMISTIC_WRITE, orderBy: { occurredAt: "asc", id: "asc" }, limit },
+    const claimed = await this.em.execute<{ id: string }[]>(
+      `select id from outbox_messages
+        where message_group_id in (${heads.map(() => "?").join(", ")}) and published_at is null
+        order by seq
+        limit ?
+        for update`,
+      [...heads.map((h) => h.message_group_id), limit],
     );
+    const order = new Map(claimed.map((c, i) => [c.id, i]));
+    const records = await this.em.find(OutboxMessageRecord, { id: { $in: [...order.keys()] } });
+    const rows = records.sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
     return rows.map((r) =>
       OutboxMessage.rehydrate({
         id: r.id,

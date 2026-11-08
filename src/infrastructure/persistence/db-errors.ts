@@ -43,7 +43,8 @@ export function translateDbError(err: unknown): unknown {
     if (state === "23505") return new UniqueViolationError(typeof e.constraint === "string" ? e.constraint : undefined, { cause: err });
     if (state === "55P03") return new TransientError("LOCK_TIMEOUT", "wallet is busy (lock_timeout)", state, { cause: err });
     if (state === "40P01" || state === "40001") return new RetryableConflictError(state, { cause: err });
-    if (state.startsWith("08") || state.startsWith("53") || state.startsWith("57")) {
+    // 25006: the database only reads (failover window); like being down, it passes by itself
+    if (state.startsWith("08") || state.startsWith("53") || state.startsWith("57") || state === "25006") {
       return new TransientError("DATABASE_UNAVAILABLE", `database unavailable (${state})`, state, { cause: err });
     }
     if (BUG_STATES.has(state)) return new DatabaseInvariantError(state, err.message, { cause: err });

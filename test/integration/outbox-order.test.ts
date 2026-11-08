@@ -65,7 +65,7 @@ async function walletWithEvents(): Promise<{ walletId: string; events: string[] 
   const playerId = crypto.randomUUID();
   const walletId = await createWallet(a.baseUrl, "100.00", playerId);
   for (const amount of ["1.00", "2.00"]) expect((await postWager(a.baseUrl, { walletId, playerId, amount })).status).toBe(200);
-  const rows = await db.app`select id from outbox_messages where message_group_id = ${walletId} order by occurred_at, id`;
+  const rows = await db.app`select id from outbox_messages where message_group_id = ${walletId} order by seq`;
   return { walletId, events: rows.map((r: { id: string }) => r.id) };
 }
 

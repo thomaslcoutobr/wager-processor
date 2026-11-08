@@ -3,10 +3,11 @@ import { call, createWallet, postWager, type RunningApp, startApp, TestClock } f
 import { holdWalletLock } from "../helpers/locks";
 import { createTestDb, type TestDb } from "../helpers/test-db";
 
-// Lb-05: a transient failure of the pending worker (wallet busy, database down) used to leave the
-// candidate due, so the same busy candidates came first in every pass and the pending reversals of
-// other wallets never made it into the batch. Now a transient failure backs the candidate off
-// (exponential, with jitter, per instance) and the pass moves on to the others.
+// Lb-05 / R2b-01: a transient failure of the pending worker (wallet busy, database down) used to
+// leave the candidate due, so the same busy candidates came first in every pass and the pending
+// reversals of other wallets never made it into the batch. Now a transient failure backs the whole
+// wallet off (exponential, with jitter, per instance): its other candidates are skipped in the pass
+// and left out of the next queries.
 let db: TestDb;
 let clock: TestClock;
 let running: RunningApp;
@@ -46,8 +47,8 @@ describe("pending worker under a busy wallet", () => {
     const lock = await holdWalletLock(db.owner, w1);
     try {
       const first = await running.container.pendingWorker.runOnce();
-      expect(first.error).toBe(20); // all 20 hit lock_timeout
-      await running.container.pendingWorker.runOnce();
+      // one lock_timeout for the busy wallet, not twenty: its other 19 candidates are skipped
+      expect(first).toEqual({ error: 1, skipped: 19 });
       await running.container.pendingWorker.runOnce();
       expect(await status(refund.body.transactionId)).toBe("PROCESSED");
     } finally {

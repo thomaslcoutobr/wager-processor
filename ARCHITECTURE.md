@@ -1,9 +1,9 @@
 # ARCHITECTURE — Wager Processor
 
-> **Status deste documento:** planta aprovada em 07/11/2026 (v0, escrita **antes do código**) e
-> atualizada durante a implementação. Cada decisão
-> abaixo vira código e teste nas fatias da F3. Quando a implementação divergir da planta, este arquivo
-> é atualizado e a divergência fica registrada em [§20](#20-limitações-conhecidas-e-trade-offs).
+> **Status deste documento:** a primeira versão foi escrita e aprovada em 07/11/2026, antes do código,
+> e o documento foi mantido junto com a implementação. Ele descreve o que o código faz hoje; cada
+> decisão aponta o teste que a prova ([§19](#19-estratégia-de-testes)). O que ficou de fora ou mudou de
+> rumo está em [§20](#20-limitações-conhecidas-e-trade-offs).
 >
 > Legenda de evidência: **[medido]** = rodei em laboratório (Bun 1.4.4, Postgres 17, MiniStack 1.5.38)
 > durante a pesquisa; **[doc]** = documentação oficial citada em [§21](#21-referências);
@@ -488,9 +488,11 @@ CREATE TABLE outbox_messages (
   attempts         integer     NOT NULL DEFAULT 0 CHECK (attempts >= 0),
   next_attempt_at  timestamptz NOT NULL,
   published_at     timestamptz,
-  last_error       text
+  last_error       text,
+  seq              bigserial   NOT NULL UNIQUE       -- ordem dentro do grupo, sorteada sob o lock da wallet (R2b-02)
 );
 CREATE INDEX ix_outbox_due ON outbox_messages (next_attempt_at, id) WHERE published_at IS NULL;
+CREATE INDEX ix_outbox_group_pending ON outbox_messages (message_group_id, seq) WHERE published_at IS NULL;
 ```
 
 ---
@@ -662,6 +664,7 @@ Entrada: o comando validado, o `payloadHash` e, quando vem da fila, os dados da 
 | `FAILED` (replay do POST) | 500 | o corpo da transação com `status: "FAILED"`, `failureCode: "PROCESSING_FAILED"`, `retry: "NEVER"` | já existia | não reenvia; aciona o suporte |
 | `GET` de transação, em qualquer status | 200 | a transação completa | — | — |
 | Payload inválido ou header ausente | 400 | problem+json com `code` e `errors[]` | não | corrige; a mesma chave serve |
+| Corpo acima de 64 KiB | 413 | problem+json, `code: "VALIDATION_ERROR"`, `retry: "AFTER_FIX"` | não | corrige o corpo |
 | Wallet ou transação inexistente | 404 | problem+json | não | corrige o id |
 | Conflito de idempotência / wallet duplicada | 409 | problem+json, `retry: "NEVER"` | não | corrige a geração da chave |
 | Falha transitória (Postgres fora, `lock_timeout`, deadlock esgotado, desligando) | 503 + `Retry-After` | problem+json, `retry: "SAME_REQUEST"` | não (rollback) | reenvia a mesma chave e o mesmo corpo, com backoff |
@@ -719,7 +722,8 @@ negócio gravada, com o saldo intacto.
 
 SQLSTATE → grupo: `23505` no `INSERT` da transação aborta a transação e o use case roda mais uma vez
 ([§9](#9-o-use-case-submitwagertransaction-passo-a-passo)), e a segunda rodada classifica (replay, 409 ou
-`ALREADY_REVERSED`); classes `08`, `53` e `57`, `55P03` e `40xxx` são transitórias; `23514`, `23503`,
+`ALREADY_REVERSED`); classes `08`, `53` e `57`, `25006` (banco que só lê, janela de failover;
+**[ajuste na F4, R2b-03]**), `55P03` e `40xxx` são transitórias; `23514`, `23503`,
 `22P02` e `P0001` (trigger) são bug, porque a validação e o domínio deveriam ter barrado antes. No HTTP
 viram 500 com alerta e nada gravado; na fila viram `FAILED PROCESSING_FAILED` ([§12](#12-consumidor-sqs)).
 
@@ -768,7 +772,8 @@ chave de idempotência devolve o resultado gravado. É o mesmo caminho do desfec
 **Banco fora [ajuste na F4, Lb-02].** Cada recebimento conta para o limite do redrive. Com o backoff da
 tabela, a mensagem gastava as 5 tentativas em no máximo 15 s e ia para a DLQ: uma queda longa do
 Postgres mandaria tudo o que chegasse para lá. Agora o primeiro `DATABASE_UNAVAILABLE` pausa todos os
-laços da instância. Uma sonda (o mesmo `select 1` da readiness, com prazo de 1 s) roda a cada
+laços da instância. Uma sonda (a mesma da readiness, com prazo de 1 s; ela confere que o banco
+**escreve**, `transaction_read_only = off`, porque um banco que só lê não processa nada, R2b-03) roda a cada
 0,5 s, dobrando até 5 s, e os laços só voltam a receber quando ela passa. Cada mensagem em voo na hora
 da queda gasta 1 tentativa, e as outras nenhuma. O `lock_timeout` não pausa nada, porque é de uma
 wallet só.
@@ -834,11 +839,16 @@ dreno limpo sair com 0.
 ```
 loop a cada OUTBOX_POLL_MS (200 ms, com jitter), em toda instância:
   BEGIN; SET LOCAL statement_timeout = '10s'
-  SELECT … FROM outbox_messages
-   WHERE published_at IS NULL AND next_attempt_at <= $now
-   ORDER BY next_attempt_at, id LIMIT 10
-   FOR UPDATE SKIP LOCKED
-  para cada linha:
+  -- passo 1: a cabeça (evento não publicado mais antigo) de cada grupo, quando devida
+  SELECT o.message_group_id FROM outbox_messages o
+   WHERE o.published_at IS NULL AND o.next_attempt_at <= $now
+     AND NOT EXISTS (um evento não publicado mais antigo no mesmo grupo)
+   ORDER BY o.next_attempt_at, o.id LIMIT 10
+   FOR UPDATE OF o SKIP LOCKED
+  -- passo 2: os eventos não publicados desses grupos, do mais antigo ao mais novo
+  SELECT … WHERE message_group_id IN (…) AND published_at IS NULL
+   ORDER BY occurred_at, id LIMIT 10 FOR UPDATE
+  para cada linha (o grupo para no primeiro evento que falha ou ainda não está devido):
     SendMessage(wager-events.fifo, MessageGroupId = message_group_id, MessageDeduplicationId = id)
     ok   → published_at = $now
     erro → OutboxMessage.scheduleRetry(now) e PARA o lote (o resto fica intacto para a próxima passada)
@@ -863,6 +873,14 @@ loop a cada OUTBOX_POLL_MS (200 ms, com jitter), em toda instância:
      daquele grupo;
   2. trava os eventos pendentes desses grupos, do mais antigo ao mais novo. O publisher para o grupo no
      primeiro que falha ou ainda está em backoff.
+
+  **[ajuste na F4, R2b-02] "Mais antigo" é a coluna `seq` (`bigserial`), não o `occurred_at`.** O
+  `occurred_at` vem do relógio da instância que decidiu; com duas instâncias a 5 ms uma da outra, a
+  versão 3 de uma wallet saía antes da 2. O `seq` é sorteado pelo `INSERT`, dentro da transação de
+  negócio e depois do lock da wallet, então para uma wallet ele segue a ordem do lock, diga o relógio o
+  que disser. O índice parcial `(message_group_id, seq) WHERE published_at IS NULL` atende os dois
+  passos sem varrer o backlog inteiro (Migration20261108000300_outbox_sequence;
+  `test/integration/outbox-order-clock.test.ts`, vermelho no código anterior).
 
   O `WalletBalanceChanged` continua carregando `walletVersion` como rede para o consumidor, porque a
   entrega é "pelo menos uma vez": um reenvio pode chegar depois de um evento mais novo. Testes em
@@ -919,11 +937,16 @@ loop a cada PENDING_POLL_MS (500 ms, com jitter), em toda instância:
   o que resolve cadeias (ROLLBACK de um REFUND que esperava a BET) em ordem.
 - Se o banco recusar a decisão de uma pendência (erro determinístico, que seria bug), o worker grava
   `FAILED PROCESSING_FAILED` numa transação própria, para não repetir para sempre. Erro transitório (wallet
-  ocupada, banco fora) deixa a linha intacta, e **esta instância** deixa a candidata de fora da consulta
-  por um tempo, com o mesmo backoff exponencial com jitter da pendência. Sem isso, as mesmas
-  candidatas ocupadas viriam primeiro em todo ciclo e encheriam o lote, e as reversões pendentes de
-  outras wallets nunca seriam tentadas. O backoff fica em memória de propósito: gravá-lo seria uma
-  escrita sem a trava da wallet, o que o desenho nunca faz **[ajuste na F4, Lb-05]**.
+  ocupada, banco fora) deixa a linha intacta, e **esta instância** deixa a **wallet** de fora por um
+  tempo, com o mesmo backoff exponencial com jitter da pendência: as outras candidatas dela são puladas
+  na passada e ficam fora das próximas consultas. Sem isso, as mesmas candidatas ocupadas viriam
+  primeiro em todo ciclo e encheriam o lote, e as reversões pendentes de outras wallets nunca seriam
+  tentadas **[ajuste na F4, Lb-05]**. O primeiro conserto recuava uma candidata por vez e só segurava
+  com o relógio de teste parado: com relógio real, cada candidata ocupada gastava um `lock_timeout`, a
+  passada durava mais que o recuo, e uma wallet com mais pendências que o lote voltava a enchê-lo.
+  Recuando a wallet, uma wallet ocupada custa no máximo um `lock_timeout` por passada, tenha quantas
+  pendências tiver **[ajuste na F4, R2b-01]**. O backoff fica em memória de propósito: gravá-lo seria
+  uma escrita sem a trava da wallet, o que o desenho nunca faz.
 - Várias instâncias podem pegar o mesmo candidato; a segunda espera o lock da wallet, relê, vê que já
   não está pendente e sai. É trabalho perdido, mas correto.
 
@@ -961,6 +984,7 @@ integração e concorrência terminam rodando essa reconciliação em cada walle
 | No publisher, depois do `SendMessage`, antes do commit | evento na fila e linha ainda pendente | outro publisher republica; dedup no FIFO e no consumidor |
 | No publisher, antes do `SendMessage` | linha pendente | outro publisher pega (o lock cai com a conexão) |
 | Postgres fora | — | HTTP 503; `ready` 503; o consumidor **pausa** os laços no 1º `DATABASE_UNAVAILABLE` (métrica `sqs_consumer_paused` = 1) e sonda o banco a cada 0,5 s a 5 s; as mensagens esperam na fila sem gastar tentativa, e ele volta sozinho **[ajuste na F4, Lb-02]** |
+| Postgres que lê mas não escreve (janela de failover, `25006`) | — | o mesmo do "Postgres fora": HTTP 503, `ready` 503 e consumidor pausado, porque a sonda confere a escrita; antes a mensagem ia à DLQ em ~15 s **[ajuste na F4, R2b-03]** |
 | SQS fora | o POST HTTP continua funcionando; a outbox acumula | publisher em backoff; `outbox_lag_seconds` sobe; `ready` 503 |
 | SIGTERM | dreno ou devolução de visibilidade ([§12](#12-consumidor-sqs)) | outra instância continua |
 | SIGKILL / OOM | igual à queda antes ou depois do commit | visibilidade expira e a mensagem volta |
@@ -1009,8 +1033,9 @@ competir com correção financeira, concorrência e idempotência.
 
 O que fica no código:
 
-- `ProviderIdentityPort.resolve(headers): Promise<ProviderIdentity>` e um `AuthGuard` global nos
-  endpoints de negócio (os de health ficam de fora), em `src/interfaces/http/auth.ts`. Hoje o
+- `ProviderIdentityPort.resolve(headers): Promise<ProviderIdentity>` e o `ProviderAuthGuard`, aplicado
+  com `@UseGuards` nos controllers de negócio (wallets e transações; health e métricas ficam de fora),
+  em `src/interfaces/http/auth.ts`. Hoje o
   adaptador é no-op: aceita a requisição e pendura a identidade "anônima" em `req.identity`.
 - O ponto de checagem "o `providerId` do payload pertence à identidade autenticada", que viraria 403
   `PROVIDER_MISMATCH`, está marcado no guard e **não está implementado**. O use case não recebe a
@@ -1067,11 +1092,13 @@ Testes além da lista mínima da seção 13:
 | Dois `POST /wallets` iguais ao mesmo tempo (10×10): um 201, nove 409, nunca 500 | `test/concurrency/wallet-creation-race.test.ts` |
 | Rajada HTTP maior que o pool numa wallet: outra wallet e `ready` respondem 503 no prazo, `live` 200, tudo volta depois ([§20](#20-limitações-conhecidas-e-trade-offs)) | `test/concurrency/hot-wallet-burst.test.ts` |
 | Hora da decisão lida depois do lock (o tempo do ledger nunca anda para trás) | `test/integration/clock-after-lock.test.ts` |
-| Ordem dos eventos por wallet entre lotes e entre publishers; publisher com SQS lento tem teto de tempo | `test/integration/outbox-order.test.ts`, `test/integration/outbox-slow-bus.test.ts` |
+| Ordem dos eventos por wallet entre lotes, entre publishers e entre instâncias com relógios diferentes; publisher com SQS lento tem teto de tempo | `test/integration/outbox-order.test.ts`, `test/integration/outbox-order-clock.test.ts`, `test/integration/outbox-slow-bus.test.ts` |
 | Consumidor com N laços, 1 mensagem por vez, nunca mais que a metade do pool | `test/concurrency/sqs-consumer-loops.test.ts`, `test/unit/config.test.ts` |
 | Postgres fora por 20 s: a mensagem espera e é aplicada, não vai à DLQ; Postgres pendurado: 503 no prazo | `test/integration/database-outage.test.ts`, `test/integration/database-hang.test.ts` |
 | SIGTERM: dreno, devolução de visibilidade, publisher e worker param entre itens, exit 0 | `test/integration/shutdown.test.ts` |
-| Worker de pendências recua a wallet ocupada e não trava as outras | `test/concurrency/pending-backoff.test.ts` |
+| Worker de pendências recua a wallet ocupada e não trava as outras, com relógio parado e com relógio real | `test/concurrency/pending-backoff.test.ts`, `test/concurrency/pending-backoff-realclock.test.ts` |
+| Banco que só lê (failover): fila pausa, HTTP 503, nada vai à DLQ e aplica quando a escrita volta | `test/integration/database-read-only.test.ts` |
+| Borda HTTP: 413 acima de 64 KiB, sem `X-Powered-By`, `ready` sem detalhe interno | `test/integration/http-edge.test.ts` |
 | Reconciliação reporta a divergência feita por papel privilegiado, sem corrigir, com log e métrica | `test/integration/reconciliation.test.ts` |
 | Valor das métricas (status, duplicados, latência, conflito de lock 55P03) e `messageId` no log da fila; log sem body nem valor | `test/integration/observability-values.test.ts`, `test/integration/observability.test.ts` |
 | Fronteira das camadas: domínio e aplicação só importam da lista fechada (sem `@nestjs`, sem `@mikro-orm`) | `test/unit/architecture-boundaries.test.ts` |
@@ -1085,7 +1112,13 @@ Como os testes ficam determinísticos:
 - contenção forçada: o teste segura `SELECT … FOR UPDATE` na wallet, espera `pg_stat_activity` mostrar
   N backends esperando lock e só então solta;
 - failpoints em vez de `kill -9` por tempo;
-- nada de `sleep` fixo: `waitFor(condição, prazo)`;
+- espera por condição (`waitFor(condição, prazo)`), não por relógio. As exceções são os cenários que
+  são de tempo por natureza: a queda de 20 s do Postgres (`database-outage.test.ts`) e as janelas do
+  SIGKILL e do SIGTERM em `restart.test.ts`. Neste último, a garantia é o estado final consistente, não
+  que o SIGKILL tenha pegado trabalho em voo (quem prova isso é o failpoint de
+  `crash-after-commit.test.ts`);
+- os limites de tempo absolutos (por exemplo "outra wallet responde em menos de 2 s") foram medidos na
+  minha máquina com folga; numa máquina bem mais lenta eles são o primeiro lugar a olhar;
 - `Clock` injetável e prazos curtos por variável de ambiente (TTL, backoff, visibilidade);
 - dados novos por teste (wallet e player com UUID novo);
 - os testes de corrida rodam em laço (20 vezes) antes da entrega; um flake é bug do produto.
@@ -1123,7 +1156,10 @@ a regra de reenvio para o provedor ([§10.2](#102-mapa-de-status)); as variávei
   reenviadas, nada ficou gravado). Com o lock solto, a outra wallet e o `ready` voltam sozinhos. Ou
   seja: uma wallet quente derruba a vazão da **instância** inteira enquanto dura, e o `ready` em 503 a
   tira do balanceador. Isolar a wallet quente (pool próprio ou limite de espera por wallet) ficou de fora.
-- **Ordem dos eventos:** garantida por wallet, também entre publishers (Lb-08, §13). O `walletVersion`
+- **Ordem dos eventos:** garantida por wallet, também entre publishers e entre instâncias com relógios
+  diferentes, porque a ordem é a do `seq` gravado sob o lock da wallet (Lb-08 e R2b-02, §13). Ela vale
+  para a publicação; a entrega continua "pelo menos uma vez", e um reenvio pode chegar depois de um
+  evento mais novo. O `walletVersion`
   vai no `WalletBalanceChanged` para um consumidor futuro poder descartar evento velho ou notar buraco;
   hoje nenhum consumidor nem teste usa esse campo para isso (o consumidor de referência dos testes
   deduplica só por `eventId`).
@@ -1152,7 +1188,11 @@ a regra de reenvio para o provedor ([§10.2](#102-mapa-de-status)); as variávei
 - **`ready` depende do SQS** (como pede o enunciado): com o SQS fora, a instância sai do balanceador,
   mesmo podendo atender o POST síncrono. Em produção eu separaria os dois sinais.
 - **Senhas de desenvolvimento** no compose e na migration (`wager`, `wager_app`). Em produção, viriam
-  de um gerenciador de segredos.
+  de um gerenciador de segredos. Por isso o compose publica as portas só em `127.0.0.1`, e o container
+  do app roda com o usuário sem privilégio da imagem (`bun`), não como root.
+- **Borda HTTP mínima:** corpo limitado a 64 KiB (413), sem o header `X-Powered-By`, e o
+  `/health/ready`, que é aberto, devolve só `ok`/`fail` por dependência (a mensagem do erro vai para o
+  log). Não há rate limit nem conferência de `Content-Type`: isso fica no gateway.
 - **Ledger e outbox crescem sem poda.** Arquivamento e particionamento estão fora do escopo.
 - **`PENDING` não é gravado** ([§4.3](#43-wagertransaction-e-estados)). Se um dia o aceite virar
   assíncrono (202 e depois o processamento), o schema já aceita o estado.
