@@ -21,7 +21,7 @@ export interface AppConfig {
     visibilityTimeoutS: number;
     waitTimeS: number;
     maxReceiveCount: number;
-    batchSize: number;
+    consumerConcurrency: number;
     retryBaseMs: number;
     retryMaxMs: number;
   };
@@ -49,11 +49,19 @@ function bool(env: Env, name: string, fallback: boolean): boolean {
 export function loadConfig(env: Env = process.env): AppConfig {
   const databaseUrl = env.DATABASE_URL;
   if (!databaseUrl) throw new Error("DATABASE_URL is required");
+  const dbPoolMax = int(env, "DB_POOL_MAX", 10, 1);
+  // each consumer loop can hold a connection while it waits on a wallet lock: at most half of the
+  // pool goes to them, the rest stays for HTTP and the two pollers (ARCHITECTURE §12)
+  const consumerConcurrency = int(env, "SQS_CONSUMER_CONCURRENCY", 4, 1);
+  const maxLoops = Math.max(1, Math.floor(dbPoolMax / 2));
+  if (consumerConcurrency > maxLoops) {
+    throw new Error(`SQS_CONSUMER_CONCURRENCY must be at most half of DB_POOL_MAX (${maxLoops}), got ${consumerConcurrency}`);
+  }
   return {
     nodeEnv: env.NODE_ENV ?? "development",
     port: int(env, "PORT", 3000),
     databaseUrl,
-    dbPoolMax: int(env, "DB_POOL_MAX", 10, 1),
+    dbPoolMax,
     lockTimeoutMs: int(env, "LOCK_TIMEOUT_MS", 5_000, 1),
     logLevel: env.LOG_LEVEL ?? "info",
     shutdownGraceMs: int(env, "SHUTDOWN_GRACE_MS", 8_000),
@@ -80,7 +88,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
       visibilityTimeoutS: int(env, "SQS_VISIBILITY_TIMEOUT_S", 30, 1),
       waitTimeS: int(env, "SQS_WAIT_TIME_S", 20, 0),
       maxReceiveCount: int(env, "SQS_MAX_RECEIVE_COUNT", 5, 1),
-      batchSize: int(env, "SQS_BATCH_SIZE", 10, 1),
+      consumerConcurrency,
       retryBaseMs: int(env, "SQS_RETRY_BASE_MS", 1_000, 0),
       retryMaxMs: int(env, "SQS_RETRY_MAX_MS", 30_000, 0),
     },

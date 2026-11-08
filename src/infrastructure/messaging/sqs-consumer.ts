@@ -21,32 +21,48 @@ export interface ConsumerConfig {
   maxReceiveCount: number;
   visibilityTimeoutS: number;
   waitTimeS: number;
-  batchSize: number;
+  /** Receive loops per instance. Each one holds at most one message, so at most one DB transaction. */
+  concurrency: number;
   retryBaseMs: number;
   retryMaxMs: number;
   shutdownGraceMs: number;
 }
 
+/** Pause between empty receives when the long poll is capped down to 0 s (short grace), so a loop never spins. */
+const IDLE_SHORT_POLL_MS = 100;
+
 const sleep = (ms: number, signal: AbortSignal) =>
   new Promise<void>((resolve) => {
-    const t = setTimeout(resolve, ms);
-    signal.addEventListener("abort", () => {
+    if (signal.aborted) return resolve();
+    const done = () => {
       clearTimeout(t);
+      signal.removeEventListener("abort", done);
       resolve();
-    }, { once: true });
+    };
+    const t = setTimeout(done, ms);
+    signal.addEventListener("abort", done, { once: true });
   });
 
 /**
  * Own SQS consumer (~200 lines) so the decisions under evaluation are visible (ARCHITECTURE §12):
- * ack only after COMMIT, three error classes, retry by ChangeMessageVisibility with full jitter,
- * DLQ with the reason, per-group order inside a batch, drain-or-hand-back on SIGTERM.
+ * N receive loops with ONE message per ReceiveMessage, ack only after COMMIT, three error classes,
+ * retry by ChangeMessageVisibility with full jitter, DLQ with the reason, graceful drain on SIGTERM.
+ *
+ * One message per receive because SQS counts receives, not attempts: a batch brings the followers of
+ * a group along and every hand-back adds to their ApproximateReceiveCount, so they could reach the
+ * redrive limit without ever being tried. With one per receive, FIFO itself keeps the rest of the
+ * group back while its head is in flight (also during the retry backoff), and the other loops keep
+ * applying other wallets in parallel.
  */
 export class SqsConsumer implements BackgroundJob {
   readonly name = "sqs-consumer";
-  private stopping = new AbortController();
-  private poller: Promise<void> | undefined;
+  private stopping = false;
+  /** Wakes loops sleeping between receives. It never cancels a receive (see stop()). */
+  private wake = new AbortController();
+  /** Cancels the receives still open when the grace runs out. */
+  private hardStop = new AbortController();
+  private loops: Promise<void>[] = [];
   private readonly held = new Map<string, string>(); // SQS MessageId → receipt handle
-  private readonly active = new Set<Promise<void>>();
 
   constructor(
     private readonly sqs: SQSClient,
@@ -60,29 +76,41 @@ export class SqsConsumer implements BackgroundJob {
   ) {}
 
   start(): void {
-    if (this.poller) return;
-    this.stopping = new AbortController();
-    this.poller = this.pollLoop();
+    if (this.loops.length) return;
+    this.stopping = false;
+    this.wake = new AbortController();
+    this.hardStop = new AbortController();
+    this.loops = Array.from({ length: this.cfg.concurrency }, () => this.receiveLoop());
   }
 
+  /**
+   * Graceful, like the reference consumers (bbc/sqs-consumer stops with `abort: false` by default):
+   * no new receive leaves, the receives already open run to the end and hand back what they bring,
+   * and the messages being processed get the grace. Aborting an open long poll does not stop the
+   * server, which could still take a message for a request nobody reads (invisible for the whole
+   * visibility timeout). Only when the grace runs out are the open receives cut and the messages in
+   * processing handed back.
+   */
   async stop(): Promise<void> {
-    if (!this.poller) return;
-    this.stopping.abort(); // cancels the pending long poll; no new ReceiveMessage leaves
+    if (!this.loops.length) return;
+    this.stopping = true;
+    this.wake.abort();
     let graceTimer: ReturnType<typeof setTimeout> | undefined;
     const drained = await Promise.race([
-      Promise.allSettled([this.poller, ...this.active]).then(() => true),
+      Promise.allSettled(this.loops).then(() => true),
       new Promise<boolean>((resolve) => {
         graceTimer = setTimeout(() => resolve(false), this.cfg.shutdownGraceMs);
       }),
     ]).finally(() => clearTimeout(graceTimer)); // a pending timer would keep the event loop alive
     if (!drained) {
+      this.hardStop.abort();
       this.log("warn", "shutdown grace exceeded, handing messages back", { held: this.held.size });
       await Promise.allSettled([...this.held.values()].map((r) => this.release(r)));
       // the handler still running must not commit after its message was handed back: leave now.
       // Postgres rolls the open transaction back when the connection drops.
       setTimeout(() => process.exit(1), 200).unref();
     }
-    this.poller = undefined;
+    this.loops = [];
     this.log("info", "sqs consumer stopped", { drained });
   }
 
@@ -90,65 +118,63 @@ export class SqsConsumer implements BackgroundJob {
     return this.queues.url(this.cfg.queueName);
   }
 
-  private async pollLoop(): Promise<void> {
+  /** A long poll never outlives half of the grace, so an idle loop always ends inside it on SIGTERM. */
+  private pollWaitS(): number {
+    return Math.min(this.cfg.waitTimeS, Math.floor(this.cfg.shutdownGraceMs / 2000));
+  }
+
+  private async receiveLoop(): Promise<void> {
+    const waitS = this.pollWaitS();
     let failures = 0;
-    while (!this.stopping.signal.aborted) {
+    while (!this.stopping) {
+      let msg: Message | undefined;
       try {
         const res = await this.sqs.send(
           new ReceiveMessageCommand({
             QueueUrl: await this.queueUrl(),
-            MaxNumberOfMessages: this.cfg.batchSize,
-            WaitTimeSeconds: this.cfg.waitTimeS,
+            MaxNumberOfMessages: 1, // never more: see the class comment
+            WaitTimeSeconds: waitS,
             VisibilityTimeout: this.cfg.visibilityTimeoutS,
             MessageSystemAttributeNames: ["ApproximateReceiveCount", "MessageGroupId"],
           }),
-          { abortSignal: this.stopping.signal },
+          { abortSignal: this.hardStop.signal },
         );
         failures = 0;
-        // FIFO: different groups (wallets) in parallel, the same group in sequence
-        const groups = new Map<string, Message[]>();
-        for (const m of res.Messages ?? []) {
-          const g = m.Attributes?.MessageGroupId ?? m.MessageId ?? "unknown";
-          groups.set(g, [...(groups.get(g) ?? []), m]);
-        }
-        await Promise.all(
-          [...groups.values()].map((msgs) => {
-            const p: Promise<void> = this.processGroup(msgs).finally(() => this.active.delete(p));
-            this.active.add(p);
-            return p;
-          }),
-        );
+        msg = res.Messages?.[0];
       } catch (err) {
-        if (this.stopping.signal.aborted) break; // expected AbortError on shutdown
+        if (this.hardStop.signal.aborted) return; // cut at the end of the grace
         failures++;
         const wait = Math.min(30_000, 500 * 2 ** failures);
         this.log("error", "sqs receive failed", { err: String(err), retryInMs: wait });
-        await sleep(wait, this.stopping.signal);
+        await sleep(wait, this.wake.signal);
+        continue;
+      }
+      if (!msg) {
+        if (waitS === 0) await sleep(IDLE_SHORT_POLL_MS, this.wake.signal);
+        continue;
+      }
+      if (this.stopping) {
+        // arrived while shutting down: hand it back at once so another instance takes it
+        await this.release(msg.ReceiptHandle!).catch((err) =>
+          this.log("warn", "hand-back on shutdown failed; it returns after the visibility timeout", { err: String(err) }),
+        );
+        return;
+      }
+      try {
+        await this.processOne(msg);
+      } catch (err) {
+        // SQS refused the retry or DLQ call; the loop goes on and the message returns after its visibility timeout
+        this.log("error", "message handling failed", { err: String(err) });
       }
     }
   }
 
-  private async processGroup(messages: Message[]): Promise<void> {
-    for (let i = 0; i < messages.length; i++) {
-      if (this.stopping.signal.aborted) {
-        await this.releaseAll(messages.slice(i)); // not started: hand back right away
-        return;
-      }
-      const ok = await this.processOne(messages[i]!);
-      if (!ok) {
-        // the next ones of the same group must not overtake the one that failed
-        await this.releaseAll(messages.slice(i + 1));
-        return;
-      }
-    }
-  }
-
-  /** Returns true when the message was acked. Runs in its own log context (messageId, correlationId…). */
-  private processOne(msg: Message): Promise<boolean> {
+  /** Runs in its own log context (messageId, correlationId…). */
+  private processOne(msg: Message): Promise<void> {
     return withLogContext({ sqsMessageId: msg.MessageId }, () => this.processInContext(msg));
   }
 
-  private async processInContext(msg: Message): Promise<boolean> {
+  private async processInContext(msg: Message): Promise<void> {
     const sqsId = msg.MessageId ?? "unknown";
     const receipt = msg.ReceiptHandle!;
     const receiveCount = Number(msg.Attributes?.ApproximateReceiveCount ?? "1");
@@ -174,7 +200,7 @@ export class SqsConsumer implements BackgroundJob {
           // the effect is committed; the message will come back and the inbox will absorb it
           this.log("warn", "delete after commit failed; redelivery will be deduplicated", { ...fields, err: String(err) });
         }
-        return true;
+        return;
       }
 
       if (outcome.action === "retry" && receiveCount < this.cfg.maxReceiveCount) {
@@ -185,7 +211,7 @@ export class SqsConsumer implements BackgroundJob {
         );
         this.metrics.sqsRetries.inc();
         this.log("warn", "message will be retried", { ...fields, reason: outcome.reason, delayS });
-        return false;
+        return;
       }
 
       const reason = outcome.action === "dlq" ? outcome.reason : "RETRY_LIMIT_EXCEEDED";
@@ -193,7 +219,6 @@ export class SqsConsumer implements BackgroundJob {
       await this.sqs.send(new DeleteMessageCommand({ QueueUrl: await this.queueUrl(), ReceiptHandle: receipt }));
       this.metrics.sqsDlq.inc({ reason });
       this.log("error", "message sent to DLQ", { ...fields, reason, detail: outcome.reason });
-      return false;
     } finally {
       this.held.delete(sqsId);
     }
@@ -217,9 +242,5 @@ export class SqsConsumer implements BackgroundJob {
 
   private async release(receipt: string): Promise<void> {
     await this.sqs.send(new ChangeMessageVisibilityCommand({ QueueUrl: await this.queueUrl(), ReceiptHandle: receipt, VisibilityTimeout: 0 }));
-  }
-
-  private async releaseAll(messages: Message[]): Promise<void> {
-    await Promise.allSettled(messages.map((m) => this.release(m.ReceiptHandle!)));
   }
 }

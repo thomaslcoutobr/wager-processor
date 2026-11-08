@@ -620,11 +620,16 @@ viram 500 com alerta e nada gravado; na fila viram `FAILED PROCESSING_FAILED` ([
 ## 12. Consumidor SQS
 
 - Fila `wager-transactions.fifo`, DLQ `wager-transactions-dlq.fifo` (FIFO também, exigência da AWS
-  **[doc]**), `maxReceiveCount = 5`, visibilidade de 30 s, long polling de 20 s, lotes de até 10.
+  **[doc]**), `maxReceiveCount = 5`, visibilidade de 30 s, long polling de até 20 s (limitado à metade
+  do grace, ver Desligamento), **uma mensagem por recebimento**, em `SQS_CONSUMER_CONCURRENCY` laços
+  por instância (padrão 4, no máximo metade de `DB_POOL_MAX`).
 - O `messageId` da inbox é o do **envelope** (`messageId` do JSON), não o `MessageId` do SQS: um
   reenvio do produtor ganha outro `MessageId` no SQS, mas é a mesma mensagem lógica.
-- Grupos (wallets) diferentes do mesmo lote rodam em paralelo; o mesmo grupo roda em sequência. Se uma
-  mensagem do grupo falha, as seguintes do mesmo grupo no lote voltam com visibilidade 0.
+- Grupos (wallets) diferentes rodam em paralelo, um por laço; o mesmo grupo roda em sequência, e quem
+  garante isso é o próprio FIFO: enquanto a cabeça do grupo está em voo (inclusive no backoff do
+  retry), o SQS não entrega a seguinte daquele grupo a ninguém **[doc]** (o MiniStack faz o mesmo: o
+  `_collect_fifo` pula grupo com mensagem em voo e roda sem `await` no meio, então dois laços não
+  pegam o mesmo grupo **[lido no código do MiniStack 1.5.38]**).
 - Cada mensagem roda num `em.fork()` próprio (o EM global do MikroORM recusa operação fora de contexto
   **[medido]**) e num `AsyncLocalStorage` com `correlationId` e `messageId`.
 
@@ -641,13 +646,45 @@ O redrive automático do SQS (`maxReceiveCount = 5`) fica como rede: se o proces
 na mesma mensagem antes de tratá-la, o próprio SQS a move para a DLQ. Ele não incrementa a contagem
 num `ChangeMessageVisibility` **[medido]**.
 
-**Desligamento (SIGTERM):** o `/health/ready` passa a responder 503; o consumidor para de receber
-(aborta o long poll); as mensagens em voo terminam dentro de `SHUTDOWN_GRACE_MS` (8 s); as que não
+**Desligamento (SIGTERM):** o `/health/ready` passa a responder 503; nenhum recebimento novo sai; o
+recebimento que já está aberto **termina** (não é abortado) e o que ele trouxer volta na hora com
+visibilidade 0; as mensagens em voo terminam dentro de `SHUTDOWN_GRACE_MS` (8 s); as que não
 terminarem voltam com visibilidade 0 para outra instância pegar na hora. O dreno fica em
 `beforeApplicationShutdown`, porque em `onApplicationShutdown` o MikroORM já fecha o pool, e a
 mensagem em voo cairia num pool fechado (bug reproduzido na pesquisa **[medido]**). O
 `stop_grace_period` do compose (20 s) é maior que o grace. O app sobe como PID 1 em forma exec e sai
-com código 0 em cerca de 1 s no `docker compose stop` **[medido na F0]**.
+com código 0 no `docker compose stop`, em 0,9 a 3,6 s conforme o ponto do long poll **[medido na F4]**.
+
+**[ajuste na F4] Uma mensagem por recebimento, em N laços.** A revisão provou com teste que o lote de
+até 10 punha dinheiro válido na DLQ sem tentativa. O SQS conta **recebimentos**, não tentativas: o lote
+trazia as seguintes do grupo junto com a cabeça, e cada devolução somava 1 na
+`ApproximateReceiveCount` delas. Com a cabeça falhando 5 vezes (erro transitório) ou com 5 mensagens
+ruins na frente (caminho da DLQ), a válida de trás chegava ao limite do redrive e ia para a DLQ sem
+`failureReason` e sem nunca ter rodado. Agora cada laço recebe 1 mensagem, e uma mensagem só é recebida
+quando vai ser tentada. De quebra:
+- uma wallet presa no lock não segura as outras da instância, porque o lote antigo esperava o grupo mais
+  lento antes de receber de novo;
+- no SIGTERM não sobram seguidoras em voo sem dono;
+- cada mensagem ganha os seus próprios 30 s de visibilidade.
+
+O número de laços fica limitado a metade do pool: cada laço pode segurar uma conexão esperando lock,
+e o resto fica para o HTTP e os dois pollers (a config recusa mais que isso).
+
+O desligamento segue o padrão das bibliotecas de referência (bbc/sqs-consumer para com `abort: false`
+por padrão e espera o poll em curso **[doc]**). Abortar um long poll não para o servidor, que ainda pode
+entregar uma mensagem a um pedido que ninguém lê, e ela fica invisível durante toda a visibilidade.
+Por isso o long poll é limitado à metade do grace: o laço ocioso termina dentro dele. O custo é que o
+desligamento ocioso leva até 4 s em vez de ~1 s, e há mais recebimentos vazios com a fila parada.
+Só quando o grace estoura o recebimento aberto é cortado.
+
+Testes em `test/concurrency/sqs-consumer-loops.test.ts`, todos vermelhos no código antigo, exceto o de
+ordem, que é a guarda do desenho novo:
+- R1-01, transitória na cabeça;
+- Lb-01, 5 venenos na frente;
+- wallet presa não trava outra;
+- 20 apostas da mesma wallet aplicadas na ordem do envio com 4 laços;
+- 10 wallets presas não esgotam o pool do HTTP;
+- SIGTERM com o grace estourado deixa as 3 do grupo visíveis.
 
 **[ajuste na fatia 5] Dreno do HTTP.** O teste de reinício sob carga mostrou que o `server.close()` não
 retorna enquanto o cliente continua reusando conexões keep-alive: a instância só saía pelo prazo duro,

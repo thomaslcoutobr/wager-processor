@@ -126,7 +126,7 @@ export async function buildContainer(config: AppConfig, overrides: AppOverrides 
       maxReceiveCount: config.sqs.maxReceiveCount,
       visibilityTimeoutS: config.sqs.visibilityTimeoutS,
       waitTimeS: config.sqs.waitTimeS,
-      batchSize: config.sqs.batchSize,
+      concurrency: config.sqs.consumerConcurrency,
       retryBaseMs: config.sqs.retryBaseMs,
       retryMaxMs: config.sqs.retryMaxMs,
       shutdownGraceMs: config.shutdownGraceMs,
