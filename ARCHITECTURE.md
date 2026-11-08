@@ -444,8 +444,10 @@ Postgres.
   pessimista enfileira de forma justa no próprio banco. A `version` continua existindo, porque o
   enunciado a pede, mas como dado e como rede (`uq_ledger_wallet_version`), não como mecanismo principal.
 - **UPDATE atômico condicionado** (`UPDATE … SET balance = balance - $x WHERE id = $w AND balance >= $x`):
-  correto e mais rápido na wallet quente (1,6x a 2x numa execução local **[medido]**; vale só a razão,
-  não o número). Ficou como **plano B**, porque leva a regra "saldo suficiente" para o SQL e não serializa
+  correto e um pouco mais rápido na wallet quente: 1,08x e 1,28x em duas execuções de
+  `test/bench/hot-wallet-locking.ts` (500 débitos concorrentes, pool de 10, mediana de 5 rodadas)
+  **[medido na F4]**. Vale só a razão, não o número. O "1,6x a 2x" da pesquisa vinha de um protótipo com
+  ORM fora deste repositório e não se reproduziu aqui; o script novo substitui aquela medida (Lb-09). Ficou como **plano B**, porque leva a regra "saldo suficiente" para o SQL e não serializa
   as regras que cruzam linhas (reverter uma vez, referência pendente), que no pessimista vêm de graça. A
   troca fica isolada num método do repositório.
 - **SERIALIZABLE:** exige retry de `40001` em todo caminho, sem ganho sobre o lock de linha.
@@ -745,8 +747,19 @@ loop a cada OUTBOX_POLL_MS (200 ms, com jitter), em toda instância:
   Postgres desfaz a transação e solta os locks; outro publisher reenvia. O `MessageDeduplicationId =
   eventId` colapsa a repetição na janela de 5 min do FIFO, e o consumidor dos eventos deduplica por
   `eventId`. Cenário 5 da seção 11 do enunciado.
-- A ordem entre publishers não é garantida (o A segura os eventos 1 a 10 de uma wallet e o B pega o
-  11). Por isso o `WalletBalanceChanged` carrega `walletVersion`, e o consumidor ordena por ela.
+- **[ajuste na F4, Lb-08] A ordem por wallet é garantida, também entre publishers.** Antes, o "pula o
+  resto do grupo" só valia dentro de um lote: depois da falha da cabeça, o lote seguinte publicava os
+  eventos de trás antes dela, e um 2º publisher podia pegar o evento 11 enquanto o 1º segurava o 1 a 10.
+  Agora o claim tem dois passos:
+  1. trava com `SKIP LOCKED` a **cabeça** de cada grupo, o evento não publicado mais antigo, quando está
+     devido. Um evento de trás nunca é cabeça enquanto a cabeça não sai, então ninguém mais pega nada
+     daquele grupo;
+  2. trava os eventos pendentes desses grupos, do mais antigo ao mais novo. O publisher para o grupo no
+     primeiro que falha ou ainda está em backoff.
+
+  O `WalletBalanceChanged` continua carregando `walletVersion` como rede para o consumidor, porque a
+  entrega é "pelo menos uma vez": um reenvio pode chegar depois de um evento mais novo. Testes em
+  `test/integration/outbox-order.test.ts`, os dois vermelhos no código anterior.
 - Custo aceito: a transação do publisher fica aberta durante a chamada ao SQS. É mitigado com lote
   pequeno, timeout do cliente SQS (5 s) e `statement_timeout`. A alternativa com "lease" (`locked_until`
   e publicação fora da transação) tem locks mais curtos, mas é mais código; fica registrada.

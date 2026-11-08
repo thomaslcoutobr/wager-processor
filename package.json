@@ -10,7 +10,8 @@
     "test:unit": "bun test test/unit",
     "test:integration": "bun test test/integration --timeout 120000",
     "test:concurrency": "bun test test/concurrency --timeout 120000",
-    "bench:triggers": "bun test/bench/deferred-triggers.ts"
+    "bench:triggers": "bun test/bench/deferred-triggers.ts",
+    "bench:locking": "bun test/bench/hot-wallet-locking.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",

@@ -28,6 +28,10 @@ export class PublishOutboxBatch {
         let published = 0;
         for (const message of batch) {
           if (failedGroups.has(message.messageGroupId)) continue; // keep per-wallet order inside the batch
+          if (!message.isDue(now)) {
+            failedGroups.add(message.messageGroupId); // still in backoff: the rest of its group waits behind it
+            continue;
+          }
           try {
             await this.bus.publish(message);
           } catch (err) {

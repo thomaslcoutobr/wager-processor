@@ -153,12 +153,32 @@ class MikroTransactionalStore implements TransactionalStore {
     await this.em.insertMany(OutboxMessageRecord, messages.map((m) => outboxMapper.toRow(m)));
   }
 
+  /**
+   * Claims whole groups (wallets) in order, in two steps (ARCHITECTURE §13):
+   *  1. the HEAD of each group, i.e. its oldest unpublished event, when due, FOR UPDATE SKIP LOCKED.
+   *     A group whose head another publisher holds is skipped, and nobody can claim a later event of
+   *     it: a later event is never a head while the head is unpublished.
+   *  2. the unpublished events of the claimed groups, oldest first. The publisher stops a group at the
+   *     first one that fails or is not due, so a group never publishes out of order.
+   * SKIP LOCKED is right for a queue table, wrong for a wallet.
+   */
   async claimDueOutbox(now: Date, limit: number): Promise<OutboxMessage[]> {
-    // PESSIMISTIC_PARTIAL_WRITE = FOR UPDATE SKIP LOCKED: right for a queue table, wrong for a wallet
+    const heads = await this.em.execute<{ message_group_id: string }[]>(
+      `select o.message_group_id from outbox_messages o
+        where o.published_at is null and o.next_attempt_at <= ?
+          and not exists (select 1 from outbox_messages p
+                           where p.message_group_id = o.message_group_id and p.published_at is null
+                             and (p.occurred_at, p.id) < (o.occurred_at, o.id))
+        order by o.next_attempt_at, o.id
+        limit ?
+        for update of o skip locked`,
+      [now, limit],
+    );
+    if (heads.length === 0) return [];
     const rows = await this.em.find(
       OutboxMessageRecord,
-      { publishedAt: null, nextAttemptAt: { $lte: now } },
-      { lockMode: LockMode.PESSIMISTIC_PARTIAL_WRITE, orderBy: { nextAttemptAt: "asc", id: "asc" }, limit },
+      { messageGroupId: { $in: heads.map((h) => h.message_group_id) }, publishedAt: null },
+      { lockMode: LockMode.PESSIMISTIC_WRITE, orderBy: { occurredAt: "asc", id: "asc" }, limit },
     );
     return rows.map((r) =>
       OutboxMessage.rehydrate({
