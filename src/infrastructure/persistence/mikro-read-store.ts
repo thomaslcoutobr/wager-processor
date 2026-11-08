@@ -48,11 +48,15 @@ export class MikroReadStore implements ReadStore {
     });
   }
 
-  findDuePending(now: Date, limit: number): Promise<Array<{ id: string; walletId: string }>> {
+  findDuePending(now: Date, limit: number, excludeIds: string[] = []): Promise<Array<{ id: string; walletId: string }>> {
     return this.read(async (em) => {
       const rows = await em.find(
         WagerTransactionRecord,
-        { status: WagerTransactionStatus.PendingReference, nextAttemptAt: { $lte: now } },
+        {
+          status: WagerTransactionStatus.PendingReference,
+          nextAttemptAt: { $lte: now },
+          ...(excludeIds.length ? { id: { $nin: excludeIds } } : {}),
+        },
         { fields: ["id", "walletId"], orderBy: { nextAttemptAt: "asc" }, limit },
       );
       return rows.map((r) => ({ id: r.id, walletId: r.walletId }));

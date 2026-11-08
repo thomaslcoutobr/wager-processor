@@ -104,6 +104,8 @@ export async function buildContainer(config: AppConfig, overrides: AppOverrides 
     metrics,
     { pollMs: config.pendingReference.pollMs, batchSize: config.pendingReference.batchSize },
     log,
+    policy,
+    random,
   );
   const submit = new SubmitWagerTransaction(uow, read, clock, ids, policy, metrics, random);
   const outboxPublisher = new OutboxPublisherWorker(

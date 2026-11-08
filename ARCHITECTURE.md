@@ -783,8 +783,12 @@ loop a cada PENDING_POLL_MS (500 ms, com jitter), em toda instância:
   (`REFERENCE_NOT_PROCESSED`) em vez de esperar o próximo backoff. Vale no caminho principal e no worker,
   o que resolve cadeias (ROLLBACK de um REFUND que esperava a BET) em ordem.
 - Se o banco recusar a decisão de uma pendência (erro determinístico, que seria bug), o worker grava
-  `FAILED PROCESSING_FAILED` numa transação própria, para não repetir para sempre. Erro transitório deixa a
-  linha intacta e ela volta no próximo ciclo.
+  `FAILED PROCESSING_FAILED` numa transação própria, para não repetir para sempre. Erro transitório (wallet
+  ocupada, banco fora) deixa a linha intacta, e **esta instância** deixa a candidata de fora da consulta
+  por um tempo, com o mesmo backoff exponencial com jitter da pendência. Sem isso, as mesmas
+  candidatas ocupadas viriam primeiro em todo ciclo e encheriam o lote, e as reversões pendentes de
+  outras wallets nunca seriam tentadas. O backoff fica em memória de propósito: gravá-lo seria uma
+  escrita sem a trava da wallet, o que o desenho nunca faz **[ajuste na F4, Lb-05]**.
 - Várias instâncias podem pegar o mesmo candidato; a segunda espera o lock da wallet, relê, vê que já
   não está pendente e sai. É trabalho perdido, mas correto.
 
