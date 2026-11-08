@@ -48,6 +48,18 @@ const sleep = (ms: number, signal: AbortSignal) =>
   });
 
 /**
+ * Delay before the next receive, in whole seconds (the unit of ChangeMessageVisibility). "Equal jitter"
+ * (AWS Architecture Blog, "Exponential Backoff And Jitter", 2015): half of the exponential ceiling is
+ * fixed and half is random, so a retry never comes back at once while the ceiling is above zero (with
+ * full jitter, half of the first retries landed on 0 s and spent the receive budget in a burst; R1-04).
+ */
+export function retryDelayS(receiveCount: number, baseMs: number, maxMs: number, random: () => number): number {
+  const ceilingMs = Math.min(maxMs, baseMs * 2 ** (receiveCount - 1));
+  if (ceilingMs <= 0) return 0;
+  return Math.max(1, Math.ceil((ceilingMs / 2 + random() * (ceilingMs / 2)) / 1000));
+}
+
+/**
  * Own SQS consumer (~200 lines) so the decisions under evaluation are visible (ARCHITECTURE §12):
  * N receive loops with ONE message per ReceiveMessage, ack only after COMMIT, three error classes,
  * retry by ChangeMessageVisibility with full jitter, DLQ with the reason, graceful drain on SIGTERM.
@@ -255,8 +267,7 @@ export class SqsConsumer implements BackgroundJob {
       if (outcome.action === "retry" && outcome.reason === "DATABASE_UNAVAILABLE") this.pauseUntilDatabaseIsBack();
 
       if (outcome.action === "retry" && receiveCount < this.cfg.maxReceiveCount) {
-        const ceiling = Math.min(this.cfg.retryMaxMs, this.cfg.retryBaseMs * 2 ** (receiveCount - 1));
-        const delayS = Math.round((this.random() * ceiling) / 1000); // full jitter
+        const delayS = retryDelayS(receiveCount, this.cfg.retryBaseMs, this.cfg.retryMaxMs, this.random);
         await this.sqs.send(
           new ChangeMessageVisibilityCommand({ QueueUrl: await this.queueUrl(), ReceiptHandle: receipt, VisibilityTimeout: delayS }),
         );

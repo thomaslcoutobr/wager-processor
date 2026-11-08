@@ -11,7 +11,7 @@ export interface AppConfig {
   shutdownGraceMs: number;
   failpoints: string;
   pendingReference: { ttlMs: number; baseDelayMs: number; maxDelayMs: number; pollMs: number; batchSize: number };
-  outbox: { pollMs: number; batchSize: number };
+  outbox: { pollMs: number; batchSize: number; passBudgetMs: number };
   sqs: {
     endpoint: string | undefined;
     region: string;
@@ -86,6 +86,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
     outbox: {
       pollMs: int(env, "OUTBOX_POLL_MS", 200, 1),
       batchSize: int(env, "OUTBOX_BATCH_SIZE", 10, 1),
+      passBudgetMs: int(env, "OUTBOX_PASS_BUDGET_MS", 5_000, 1),
     },
     sqs: {
       endpoint: env.SQS_ENDPOINT || undefined,

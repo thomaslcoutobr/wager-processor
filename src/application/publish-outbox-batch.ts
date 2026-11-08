@@ -8,6 +8,10 @@ import type { Clock, EventBus, FailpointPort, UnitOfWork } from "./ports";
  * repeat inside the FIFO window and consumers dedupe by eventId after that.
  * Publishing never happens before the business commit: an event only exists as an outbox row of a
  * committed transaction.
+ * The claim holds a transaction (and a pool connection) while it sends, so a pass is bounded (H4): it
+ * stops at the first failed send (SQS is probably down; that row backs off, the others wait untouched)
+ * and once `passBudgetMs` is spent (the rest stays claimable for the next pass). Each send has its own
+ * timeout in the bus.
  */
 export class PublishOutboxBatch {
   constructor(
@@ -15,7 +19,7 @@ export class PublishOutboxBatch {
     private readonly bus: EventBus,
     private readonly clock: Clock,
     private readonly failpoints: FailpointPort,
-    private readonly opts: { batchSize: number; random?: () => number },
+    private readonly opts: { batchSize: number; passBudgetMs?: number; random?: () => number },
   ) {}
 
   /** Returns how many rows were published. */
@@ -25,8 +29,10 @@ export class PublishOutboxBatch {
         const now = this.clock.now();
         const batch = await store.claimDueOutbox(now, this.opts.batchSize);
         const failedGroups = new Set<string>();
+        const budgetEnds = performance.now() + (this.opts.passBudgetMs ?? 5_000);
         let published = 0;
         for (const message of batch) {
+          if (performance.now() >= budgetEnds) break;
           if (failedGroups.has(message.messageGroupId)) continue; // keep per-wallet order inside the batch
           if (!message.isDue(now)) {
             failedGroups.add(message.messageGroupId); // still in backoff: the rest of its group waits behind it
@@ -37,8 +43,7 @@ export class PublishOutboxBatch {
           } catch (err) {
             message.scheduleRetry(now, String(err), this.opts.random);
             await store.saveOutboxProgress(message);
-            failedGroups.add(message.messageGroupId);
-            continue;
+            break;
           }
           await this.failpoints.hit("outbox.after_send_before_commit");
           message.markPublished(now);

@@ -114,7 +114,7 @@ export async function buildContainer(config: AppConfig, overrides: AppOverrides 
   );
   const submit = new SubmitWagerTransaction(uow, read, clock, ids, policy, metrics, random);
   const outboxPublisher = new OutboxPublisherWorker(
-    new PublishOutboxBatch(uow, eventBus, clock, failpoints, { batchSize: config.outbox.batchSize, random }),
+    new PublishOutboxBatch(uow, eventBus, clock, failpoints, { batchSize: config.outbox.batchSize, passBudgetMs: config.outbox.passBudgetMs, random }),
     read,
     clock,
     metrics,

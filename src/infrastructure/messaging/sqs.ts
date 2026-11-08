@@ -17,10 +17,10 @@ export class QueueDirectory {
 
   constructor(private readonly sqs: SQSClient) {}
 
-  url(name: string): Promise<string> {
+  url(name: string, abortSignal?: AbortSignal): Promise<string> {
     let p = this.cache.get(name);
     if (!p) {
-      p = this.sqs.send(new GetQueueUrlCommand({ QueueName: name })).then((r) => {
+      p = this.sqs.send(new GetQueueUrlCommand({ QueueName: name }), { abortSignal }).then((r) => {
         if (!r.QueueUrl) throw new Error(`queue ${name} not found`);
         return r.QueueUrl;
       });
@@ -31,8 +31,9 @@ export class QueueDirectory {
   }
 
   async probe(name: string, timeoutMs: number): Promise<void> {
-    await this.sqs.send(new GetQueueAttributesCommand({ QueueUrl: await this.url(name), AttributeNames: ["QueueArn"] }), {
-      abortSignal: AbortSignal.timeout(timeoutMs),
+    const abortSignal = AbortSignal.timeout(timeoutMs);
+    await this.sqs.send(new GetQueueAttributesCommand({ QueueUrl: await this.url(name, abortSignal), AttributeNames: ["QueueArn"] }), {
+      abortSignal,
     });
   }
 }
@@ -47,9 +48,10 @@ export class SqsEventBus implements EventBus {
   ) {}
 
   async publish(message: OutboxMessage): Promise<void> {
+    const abortSignal = AbortSignal.timeout(this.timeoutMs);
     await this.sqs.send(
       new SendMessageCommand({
-        QueueUrl: await this.queues.url(this.queueName),
+        QueueUrl: await this.queues.url(this.queueName, abortSignal),
         MessageBody: JSON.stringify(message.payload),
         MessageGroupId: message.messageGroupId,
         MessageDeduplicationId: message.id,
@@ -58,7 +60,7 @@ export class SqsEventBus implements EventBus {
           eventVersion: { DataType: "Number", StringValue: String(message.eventVersion) },
         },
       }),
-      { abortSignal: AbortSignal.timeout(this.timeoutMs) },
+      { abortSignal },
     );
   }
 
