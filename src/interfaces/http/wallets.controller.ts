@@ -3,7 +3,7 @@ import { CreateWallet } from "../../application/create-wallet";
 import { currentLogContext } from "../../application/log-context";
 import { ReconcileWallet } from "../../application/reconcile-wallet";
 import type { IdGenerator, ReadStore } from "../../application/ports";
-import { UUID_PATTERN } from "../../application/wager-command";
+import { CONTROL_CHARS, UUID_PATTERN } from "../../application/wager-command";
 import { DomainValidationError } from "../../domain/errors";
 import { Money } from "../../domain/money";
 import { ProviderAuthGuard } from "./auth";
@@ -53,8 +53,8 @@ export class WalletsController {
     const b = (typeof body === "object" && body !== null ? body : {}) as Record<string, unknown>;
     const errors = [];
     const playerId = b.playerId;
-    if (typeof playerId !== "string" || playerId.length < 1 || playerId.length > 64) {
-      errors.push({ field: "playerId", code: "VALIDATION_ERROR" as const, message: "playerId must have 1 to 64 characters" });
+    if (typeof playerId !== "string" || playerId.length < 1 || playerId.length > 64 || CONTROL_CHARS.test(playerId)) {
+      errors.push({ field: "playerId", code: "VALIDATION_ERROR" as const, message: "playerId must have 1 to 64 characters, no control characters" });
     }
     let initialBalance: Money | undefined;
     const ib = b.initialBalance as Record<string, unknown> | undefined;

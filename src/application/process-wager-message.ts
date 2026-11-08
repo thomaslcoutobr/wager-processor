@@ -6,7 +6,7 @@ import { payloadHashOf } from "./payload-hash";
 import { InboxMessage } from "../domain/inbox-message";
 import type { Clock, IdGenerator, RequestContext, UnitOfWork } from "./ports";
 import type { SubmitWagerTransaction } from "./submit-wager-transaction";
-import { parseWagerCommand, type SubmitWagerCommand } from "./wager-command";
+import { CONTROL_CHARS, parseWagerCommand, type SubmitWagerCommand } from "./wager-command";
 
 export const WAGER_REQUESTED = "WagerTransactionRequested";
 
@@ -37,7 +37,9 @@ function parseEnvelope(body: string): Envelope | { error: string } {
   }
   if (typeof raw !== "object" || raw === null) return { error: "INVALID_ENVELOPE" };
   const e = raw as Record<string, unknown>;
-  if (typeof e.messageId !== "string" || e.messageId.length < 1 || e.messageId.length > 255) return { error: "INVALID_ENVELOPE" };
+  if (typeof e.messageId !== "string" || e.messageId.length < 1 || e.messageId.length > 255 || CONTROL_CHARS.test(e.messageId)) {
+    return { error: "INVALID_ENVELOPE" };
+  }
   if (e.type !== WAGER_REQUESTED) return { error: "UNKNOWN_MESSAGE_TYPE" };
   if (typeof e.data !== "object" || e.data === null) return { error: "INVALID_ENVELOPE" };
   return {

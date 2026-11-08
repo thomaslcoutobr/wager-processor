@@ -33,6 +33,8 @@ export type ParseResult =
 export const PROVIDER_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
 export const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const IDEMPOTENCY_KEY_MAX = 255;
+/** C0 controls and DEL: never part of an id, and Postgres refuses NUL in text (22021). */
+export const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
 const EXTERNAL_ID_MAX = 128;
 const PLAYER_ID_MAX = 64;
 
@@ -61,6 +63,8 @@ export function parseWagerCommand(body: unknown, idempotencyKey: unknown): Parse
     fail("Idempotency-Key", "MISSING_IDEMPOTENCY_KEY", "Idempotency-Key is required");
   } else if (idempotencyKey.length > IDEMPOTENCY_KEY_MAX) {
     fail("Idempotency-Key", "VALIDATION_ERROR", `Idempotency-Key must have at most ${IDEMPOTENCY_KEY_MAX} characters`);
+  } else if (CONTROL_CHARS.test(idempotencyKey)) {
+    fail("Idempotency-Key", "VALIDATION_ERROR", "Idempotency-Key must not contain control characters");
   }
 
   if (!isRecord(body)) {
@@ -72,6 +76,10 @@ export function parseWagerCommand(body: unknown, idempotencyKey: unknown): Parse
     const v = body[field];
     if (typeof v !== "string" || v.length < 1 || v.length > max) {
       fail(field, "VALIDATION_ERROR", `${field} must be a string with 1 to ${max} characters`);
+      return undefined;
+    }
+    if (CONTROL_CHARS.test(v)) {
+      fail(field, "VALIDATION_ERROR", `${field} must not contain control characters`);
       return undefined;
     }
     return v;

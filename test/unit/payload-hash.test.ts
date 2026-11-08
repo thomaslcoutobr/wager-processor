@@ -98,6 +98,10 @@ describe("parseWagerCommand (input validation, shared by HTTP and SQS)", () => {
     expect(codeOf({}, "k".repeat(256))).toBe("VALIDATION_ERROR");
   });
 
+  it("key with a control character (possible on the queue path) → VALIDATION_ERROR", () => {
+    expect(codeOf({}, "provider-a:tx\u0000")).toBe("VALIDATION_ERROR");
+  });
+
   it.each([
     ["OPENING kind", { kind: "OPENING" }, "FORBIDDEN_KIND"],
     ["unknown kind", { kind: "JACKPOT" }, "VALIDATION_ERROR"],
@@ -112,6 +116,11 @@ describe("parseWagerCommand (input validation, shared by HTTP and SQS)", () => {
     ["walletId not a UUID", { walletId: "wallet-1" }, "VALIDATION_ERROR"],
     ["missing roundId", { roundId: undefined }, "VALIDATION_ERROR"],
     ["empty playerId", { playerId: "" }, "VALIDATION_ERROR"],
+    // Postgres refuses NUL in text (22021); a control character is never part of a valid id
+    ["NUL in roundId", { roundId: "round\u0000x" }, "VALIDATION_ERROR"],
+    ["control character in playerId", { playerId: "p\u0007" }, "VALIDATION_ERROR"],
+    ["DEL in gameId", { gameId: "game\u007f" }, "VALIDATION_ERROR"],
+    ["NUL in externalTransactionId", { externalTransactionId: "tx\u0000" }, "VALIDATION_ERROR"],
     ["BET with reference", { referenceExternalTransactionId: "x" }, "VALIDATION_ERROR"],
     ["self reference", { kind: "REFUND", referenceExternalTransactionId: "transaction-123" }, "VALIDATION_ERROR"],
     ["externalTransactionId too long", { externalTransactionId: "e".repeat(129) }, "VALIDATION_ERROR"],

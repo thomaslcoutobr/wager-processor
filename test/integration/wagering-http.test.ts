@@ -75,6 +75,9 @@ describe("POST /wallets", () => {
     const r = await call(base, "POST", "/wallets", { playerId: "p", initialBalance: { amount: "10", currency: "BRL" } });
     expect(r.status).toBe(400);
     expect(r.body).toMatchObject({ code: "INVALID_AMOUNT", retry: "AFTER_FIX", status: 400 });
+    const nul = await call(base, "POST", "/wallets", { playerId: "p\u0000", initialBalance: { amount: "10.00", currency: "BRL" } });
+    expect(nul.status).toBe(400);
+    expect(nul.body.errors[0].field).toBe("playerId");
   });
 });
 
@@ -219,6 +222,11 @@ describe("POST /wagering/transactions", () => {
     expect(amount.status).toBe(400);
     expect(amount.body).toMatchObject({ code: "INVALID_AMOUNT", retry: "AFTER_FIX" });
     expect(amount.body.errors[0].field).toBe("money.amount");
+    // a NUL byte would be refused by Postgres (22021): a 400 at the edge, never a 503 "retry"
+    const nul = await call(base, "POST", "/wagering/transactions", { ...req.body, roundId: "round\u0000x" }, { "Idempotency-Key": req.key });
+    expect(nul.status).toBe(400);
+    expect(nul.body).toMatchObject({ code: "VALIDATION_ERROR", retry: "AFTER_FIX" });
+    expect(nul.body.errors[0].field).toBe("roundId");
     // the same key is still free: the corrected request goes through
     const ok = await call(base, "POST", "/wagering/transactions", req.body, { "Idempotency-Key": req.key });
     expect(ok.status).toBe(200);
