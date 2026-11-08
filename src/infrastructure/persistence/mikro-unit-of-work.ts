@@ -171,7 +171,7 @@ class MikroTransactionalStore implements TransactionalStore {
           and not exists (select 1 from outbox_messages p
                            where p.message_group_id = o.message_group_id and p.published_at is null
                              and p.seq < o.seq)
-        order by o.next_attempt_at, o.seq
+        order by o.next_attempt_at, o.id
         limit ?
         for update of o skip locked`,
       [now, limit],

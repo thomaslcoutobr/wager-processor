@@ -489,7 +489,7 @@ CREATE TABLE outbox_messages (
   next_attempt_at  timestamptz NOT NULL,
   published_at     timestamptz,
   last_error       text,
-  seq              bigserial   NOT NULL UNIQUE       -- ordem dentro do grupo, sorteada sob o lock da wallet (R2b-02)
+  seq              bigint      NOT NULL DEFAULT nextval(...) -- ordem no grupo, sorteada sob o lock da wallet (R2b-02)
 );
 CREATE INDEX ix_outbox_due ON outbox_messages (next_attempt_at, id) WHERE published_at IS NULL;
 CREATE INDEX ix_outbox_group_pending ON outbox_messages (message_group_id, seq) WHERE published_at IS NULL;
@@ -842,12 +842,12 @@ loop a cada OUTBOX_POLL_MS (200 ms, com jitter), em toda instância:
   -- passo 1: a cabeça (evento não publicado mais antigo) de cada grupo, quando devida
   SELECT o.message_group_id FROM outbox_messages o
    WHERE o.published_at IS NULL AND o.next_attempt_at <= $now
-     AND NOT EXISTS (um evento não publicado mais antigo no mesmo grupo)
+     AND NOT EXISTS (um evento não publicado do mesmo grupo com seq menor)
    ORDER BY o.next_attempt_at, o.id LIMIT 10
    FOR UPDATE OF o SKIP LOCKED
   -- passo 2: os eventos não publicados desses grupos, do mais antigo ao mais novo
   SELECT … WHERE message_group_id IN (…) AND published_at IS NULL
-   ORDER BY occurred_at, id LIMIT 10 FOR UPDATE
+   ORDER BY seq LIMIT 10 FOR UPDATE
   para cada linha (o grupo para no primeiro evento que falha ou ainda não está devido):
     SendMessage(wager-events.fifo, MessageGroupId = message_group_id, MessageDeduplicationId = id)
     ok   → published_at = $now
@@ -874,13 +874,16 @@ loop a cada OUTBOX_POLL_MS (200 ms, com jitter), em toda instância:
   2. trava os eventos pendentes desses grupos, do mais antigo ao mais novo. O publisher para o grupo no
      primeiro que falha ou ainda está em backoff.
 
-  **[ajuste na F4, R2b-02] "Mais antigo" é a coluna `seq` (`bigserial`), não o `occurred_at`.** O
+  **[ajuste na F4, R2b-02] "Mais antigo" é a coluna `seq` (de uma sequência), não o `occurred_at`.** O
   `occurred_at` vem do relógio da instância que decidiu; com duas instâncias a 5 ms uma da outra, a
   versão 3 de uma wallet saía antes da 2. O `seq` é sorteado pelo `INSERT`, dentro da transação de
   negócio e depois do lock da wallet, então para uma wallet ele segue a ordem do lock, diga o relógio o
   que disser. O índice parcial `(message_group_id, seq) WHERE published_at IS NULL` atende os dois
   passos sem varrer o backlog inteiro (Migration20261108000300_outbox_sequence;
-  `test/integration/outbox-order-clock.test.ts`, vermelho no código anterior).
+  `test/integration/outbox-order-clock.test.ts`, vermelho no código anterior). As linhas que já estavam
+  na tabela são numeradas pela regra antiga, `(occurred_at, id)`, antes de a sequência assumir; um
+  `ADD COLUMN ... bigserial` numeraria pela ordem física, e uma cabeça já retentada (o `UPDATE` move a
+  linha) ficaria depois das seguidoras **[ajuste na F4, R3-01]**; `test/integration/outbox-seq-backfill.test.ts`.
 
   O `WalletBalanceChanged` continua carregando `walletVersion` como rede para o consumidor, porque a
   entrega é "pelo menos uma vez": um reenvio pode chegar depois de um evento mais novo. Testes em
@@ -1092,7 +1095,7 @@ Testes além da lista mínima da seção 13:
 | Dois `POST /wallets` iguais ao mesmo tempo (10×10): um 201, nove 409, nunca 500 | `test/concurrency/wallet-creation-race.test.ts` |
 | Rajada HTTP maior que o pool numa wallet: outra wallet e `ready` respondem 503 no prazo, `live` 200, tudo volta depois ([§20](#20-limitações-conhecidas-e-trade-offs)) | `test/concurrency/hot-wallet-burst.test.ts` |
 | Hora da decisão lida depois do lock (o tempo do ledger nunca anda para trás) | `test/integration/clock-after-lock.test.ts` |
-| Ordem dos eventos por wallet entre lotes, entre publishers e entre instâncias com relógios diferentes; publisher com SQS lento tem teto de tempo | `test/integration/outbox-order.test.ts`, `test/integration/outbox-order-clock.test.ts`, `test/integration/outbox-slow-bus.test.ts` |
+| Ordem dos eventos por wallet entre lotes, entre publishers e entre instâncias com relógios diferentes; publisher com SQS lento tem teto de tempo | `test/integration/outbox-order.test.ts`, `test/integration/outbox-order-clock.test.ts`, `test/integration/outbox-seq-backfill.test.ts`, `test/integration/outbox-slow-bus.test.ts` |
 | Consumidor com N laços, 1 mensagem por vez, nunca mais que a metade do pool | `test/concurrency/sqs-consumer-loops.test.ts`, `test/unit/config.test.ts` |
 | Postgres fora por 20 s: a mensagem espera e é aplicada, não vai à DLQ; Postgres pendurado: 503 no prazo | `test/integration/database-outage.test.ts`, `test/integration/database-hang.test.ts` |
 | SIGTERM: dreno, devolução de visibilidade, publisher e worker param entre itens, exit 0 | `test/integration/shutdown.test.ts` |
