@@ -22,7 +22,6 @@
     "@aws-sdk/client-sqs": "^3.1164.0",
     "@mikro-orm/core": "^7.2.8",
     "@mikro-orm/migrations": "^7.2.8",
-    "@mikro-orm/nestjs": "^7.1.0",
     "@mikro-orm/postgresql": "^7.2.8",
     "@nestjs/common": "^12.4.0",
     "@nestjs/core": "^12.4.0",
