@@ -178,6 +178,22 @@ export class Migration20261107000100_schema extends Migration {
     this.addSql(`CREATE TRIGGER wtx_guard BEFORE UPDATE ON wager_transactions
                    FOR EACH ROW EXECUTE FUNCTION wtx_guard();`);
 
+    // ---- §6.2 wallet_guard: identity, owner, currency and creation time never change (balance/version do,
+    // under wallet_change_is_backed)
+    this.addSql(`
+      CREATE FUNCTION wallet_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.id IS DISTINCT FROM OLD.id
+           OR NEW.player_id IS DISTINCT FROM OLD.player_id
+           OR NEW.currency IS DISTINCT FROM OLD.currency
+           OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+          RAISE EXCEPTION 'wallet %: id, player_id, currency and created_at are immutable', OLD.id;
+        END IF;
+        RETURN NEW;
+      END $$;`);
+    this.addSql(`CREATE TRIGGER wallet_guard BEFORE UPDATE ON wallets
+                   FOR EACH ROW EXECUTE FUNCTION wallet_guard();`);
+
     // ---- §6.4 every ledger entry is backed by a PROCESSED, balance-affecting transaction of the same value,
     // moving money the way its kind does (a reversal goes against the entry it reverses); checked at COMMIT
     this.addSql(`
@@ -206,6 +222,10 @@ export class Migration20261107000100_schema extends Migration {
         END IF;
         IF expected IS NULL OR NEW.direction <> expected THEN
           RAISE EXCEPTION 'ledger entry % is a % but this % must be a %', NEW.id, NEW.direction, t.kind, coalesce(expected, '(nothing to reverse)');
+        END IF;
+        -- version 1 is the wallet as it was opened: only the OPENING entry lives there (a 0.00 wallet has none)
+        IF (NEW.wallet_version = 1) <> (t.kind = 'OPENING') THEN
+          RAISE EXCEPTION 'ledger entry %: version 1 is reserved for the OPENING entry (kind %, version %)', NEW.id, t.kind, NEW.wallet_version;
         END IF;
         SELECT version INTO w_version FROM wallets WHERE id = NEW.wallet_id;
         IF w_version IS NULL OR NEW.wallet_version > w_version THEN
@@ -264,6 +284,7 @@ export class Migration20261107000100_schema extends Migration {
     this.addSql(`DROP FUNCTION IF EXISTS wallet_change_is_backed();`);
     this.addSql(`DROP FUNCTION IF EXISTS ledger_entry_is_backed();`);
     this.addSql(`DROP FUNCTION IF EXISTS wtx_guard();`);
+    this.addSql(`DROP FUNCTION IF EXISTS wallet_guard();`);
     this.addSql(`DROP FUNCTION IF EXISTS forbid_mutation();`);
     // the role is a cluster object that may hold privileges in other databases: revoke, never drop
     this.addSql(`REVOKE USAGE ON SCHEMA public FROM wager_app;`);

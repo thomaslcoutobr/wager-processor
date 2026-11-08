@@ -242,6 +242,18 @@ describe("POST /wagering/transactions", () => {
     expect(player.body.failureCode).toBe("PLAYER_WALLET_MISMATCH");
   });
 
+  it("Lc-03: a control character in the GET-by-external-id path is a 400, never a 503 'retry the same'", async () => {
+    const bad = await call(base, "GET", "/providers/provider-a/wagering/transactions/tx%00x");
+    expect(bad.status).toBe(400);
+    expect(bad.body.retry).toBe("AFTER_FIX");
+    const badProvider = await call(base, "GET", "/providers/bad%00provider/wagering/transactions/tx-1");
+    expect(badProvider.status).toBe(400);
+    const tooLong = await call(base, "GET", `/providers/provider-a/wagering/transactions/${"x".repeat(129)}`);
+    expect(tooLong.status).toBe(400);
+    const unknown = await call(base, "GET", "/providers/provider-a/wagering/transactions/never-sent");
+    expect(unknown.status).toBe(404);
+  });
+
   it("unknown wallet is a 404 and nothing is recorded", async () => {
     const walletId = crypto.randomUUID();
     const req = wagerBody({ walletId, playerId: "p" });

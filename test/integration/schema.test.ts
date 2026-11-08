@@ -382,6 +382,34 @@ describe("deferred triggers tie every balance change to exactly one ledger entry
   });
 });
 
+describe("lens c, second pass on the ledger and the wallet row", () => {
+  it("Lc-01: version 1 belongs to the OPENING only; a new WIN entry there on a 0.00 wallet fails at commit", async () => {
+    const { walletId } = await seedWallet(db.app, "0.00");
+    await expectSqlState(
+      db.app.begin(async (tx) => {
+        const winId = crypto.randomUUID();
+        await insertTx(tx as unknown as SQL, { id: winId, walletId, kind: "WIN", amount: "500.00" });
+        await tx`insert into wallet_ledger_entries (id, wallet_id, transaction_id, direction, amount, currency,
+                   balance_before, balance_after, wallet_version, created_at)
+                 values (${crypto.randomUUID()}, ${walletId}, ${winId}, 'CREDIT', 500, 'BRL', 0, 500, 1, now())`;
+      }),
+      "P0001",
+    );
+    const [n] = await db.app`select count(*)::int as n from wallet_ledger_entries where wallet_id = ${walletId}`;
+    expect(n.n).toBe(0);
+  });
+
+  it("Lc-02: the wallet owner, currency, id and creation time cannot change (as the app role)", async () => {
+    const { walletId } = await seedWallet(db.app);
+    await expectSqlState(db.app`update wallets set player_id = 'someone-else' where id = ${walletId}`, "P0001");
+    const empty = await seedWallet(db.app, "0.00");
+    await expectSqlState(db.app`update wallets set currency = 'USD' where id = ${empty.walletId}`, "P0001");
+    await expectSqlState(db.app`update wallets set created_at = now() - interval '1 day' where id = ${walletId}`, "P0001");
+    const [w] = await db.app`select player_id, currency from wallets where id = ${walletId}`;
+    expect(w).toEqual({ player_id: `p-${walletId}`, currency: "BRL" });
+  });
+});
+
 describe("NaN never enters a money column (C4: Postgres orders NaN above every number)", () => {
   it("a transaction amount of NaN is refused by a CHECK", async () => {
     const { walletId } = await seedWallet(db.app);

@@ -35,7 +35,7 @@ export const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0
 export const IDEMPOTENCY_KEY_MAX = 255;
 /** C0 controls and DEL: never part of an id, and Postgres refuses NUL in text (22021). */
 export const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
-const EXTERNAL_ID_MAX = 128;
+export const EXTERNAL_ID_MAX = 128;
 const PLAYER_ID_MAX = 64;
 
 const EXTERNAL_KINDS: ReadonlySet<string> = new Set([

@@ -2,7 +2,7 @@ import { Body, Controller, Get, Headers, Inject, Param, Post, Res, UseGuards } f
 import { currentLogContext } from "../../application/log-context";
 import type { FailpointPort, IdGenerator, ReadStore } from "../../application/ports";
 import { SubmitWagerTransaction } from "../../application/submit-wager-transaction";
-import { parseWagerCommand } from "../../application/wager-command";
+import { CONTROL_CHARS, EXTERNAL_ID_MAX, type FieldError, parseWagerCommand, PROVIDER_ID_PATTERN } from "../../application/wager-command";
 import { ProviderAuthGuard } from "./auth";
 import { submitReply, transactionView } from "./presenters";
 import { type HttpReply, ProblemException } from "./problem";
@@ -69,6 +69,19 @@ export class WageringController {
 
   @Get("providers/:providerId/wagering/transactions/:externalTransactionId")
   async getByExternalId(@Param("providerId") providerId: string, @Param("externalTransactionId") externalId: string) {
+    // same rules as the body fields: the database must never be the one to refuse the input (Lc-03)
+    const errors: FieldError[] = [];
+    if (!PROVIDER_ID_PATTERN.test(providerId)) {
+      errors.push({ field: "providerId", code: "VALIDATION_ERROR", message: "providerId has an invalid format" });
+    }
+    if (externalId.length < 1 || externalId.length > EXTERNAL_ID_MAX || CONTROL_CHARS.test(externalId)) {
+      errors.push({
+        field: "externalTransactionId",
+        code: "VALIDATION_ERROR",
+        message: `externalTransactionId must have 1 to ${EXTERNAL_ID_MAX} characters, no control characters`,
+      });
+    }
+    if (errors.length > 0) throw ProblemException.validation("VALIDATION_ERROR", errors);
     const t = await this.read.findTransactionByExternalId(providerId, externalId);
     if (!t) throw ProblemException.notFound("TRANSACTION_NOT_FOUND", "transaction not found");
     return transactionView(t);

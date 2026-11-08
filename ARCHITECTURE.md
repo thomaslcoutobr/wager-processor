@@ -287,6 +287,12 @@ CREATE TABLE wallets (
 `player_id` é `text` porque é a identidade do jogador **no provedor**: o enunciado mostra UUIDs nos
 exemplos, mas não exige o formato. Já `wallets.id` é nosso (UUIDv7 gerado pelo serviço).
 
+Trigger `wallet_guard` (`BEFORE UPDATE`, por linha) **[ajuste na F4, Lc-02]**: recusa mudança de `id`,
+`player_id`, `currency` e `created_at`. Só `balance`, `version` e `updated_at` mudam, e saldo e versão
+ainda passam pelo `wallet_change_is_backed` (§6.5). Antes, o papel da app conseguia trocar o dono de
+uma wallet com histórico, ou a moeda de uma wallet zerada, e o mesmo já era barrado em
+`wager_transactions` pelo `wtx_guard`.
+
 ### 6.3 wager_transactions
 
 ```sql
@@ -386,6 +392,10 @@ Triggers do ledger:
   transação `PROCESSED` de valor 0,00 deixavam o papel da app gravar um lançamento "fantasma" de
   qualquer valor na versão 1, e o commit passava. A reconciliação pegava, mas a promessa do §6.5 é
   "por construção".
+  **[ajuste na F4, Lc-01]** E a versão 1 é só do `OPENING`: `wallet_version = 1` se e somente se a
+  transação é `OPENING`. Sem isso, a mesma wallet zerada aceitava uma `WIN` nova de 500,00 com
+  lançamento na versão 1, sem mexer na wallet. Como as versões de 2 até a atual já têm lançamento e
+  versão acima da atual é recusada, não sobra versão livre para um lançamento sem par.
 - Toda coluna de dinheiro recusa `NaN` num CHECK próprio **[ajuste na F4, C4]**. O `numeric` do
   Postgres aceita `'NaN'` e o ordena acima de qualquer número, então `CHECK (balance >= 0)` sozinho
   deixava passar. A regex do `Money` já barra na entrada; o CHECK fecha a porta do SQL direto.
@@ -592,7 +602,7 @@ Entrada: o comando validado, o `payloadHash` e, quando vem da fila, os dados da 
 | `GET /wallets/:walletId/ledger?cursor=&limit=50` | 200 | Keyset por `wallet_version` (decrescente). O cursor é `base64url({"v":<wallet_version>})`: estável e opaco. `limit` de 1 a 200. |
 | `POST /wagering/transactions` | 200 ou 202 | Header `Idempotency-Key` obrigatório (1 a 255 caracteres). |
 | `GET /wagering/transactions/:transactionId` | 200 | Visão completa, em qualquer status. |
-| `GET /providers/:providerId/wagering/transactions/:externalTransactionId` | 200 | Usa `uq_wtx_provider_external_id`. |
+| `GET /providers/:providerId/wagering/transactions/:externalTransactionId` | 200 · 400 · 404 | Usa `uq_wtx_provider_external_id`. Os dois parâmetros do caminho seguem as mesmas regras dos campos do corpo (formato do `providerId`; 1 a 128 caracteres, sem caractere de controle); fora disso é 400, nunca 503 **[ajuste na F4, Lc-03]**. |
 | `POST /wallets/:walletId/reconciliation` | 200 | `consistent: false` também é 200: divergência é resultado, não erro de requisição. |
 | `GET /health/live`, `GET /health/ready` | 200 / 503 | Abertos, sem autenticação. |
 | `GET /metrics` | 200 | Prometheus. |
