@@ -45,6 +45,7 @@ describe("POST /wallets/:id/reconciliation", () => {
   it("a divergence made by a privileged role is reported (never fixed), logged and counted", async () => {
     const playerId = crypto.randomUUID();
     const walletId = await createWallet(base, "100.00", playerId);
+    db.excludeFromInvariant(walletId); // tampered on purpose: the suite invariant must not count it
     // only the owner/superuser can do this: switch the guard off and tamper with the balance
     await db.owner.unsafe(`alter table wallets disable trigger wallet_change_is_backed`);
     try {
