@@ -1,5 +1,7 @@
-import { Body, Controller, Get, Headers, HttpCode, Inject, Param, Post, Query, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, HttpCode, Inject, Param, Post, Query, UseGuards } from "@nestjs/common";
 import { CreateWallet } from "../../application/create-wallet";
+import { currentLogContext } from "../../application/log-context";
+import { ReconcileWallet } from "../../application/reconcile-wallet";
 import type { IdGenerator, ReadStore } from "../../application/ports";
 import { UUID_PATTERN } from "../../application/wager-command";
 import { DomainValidationError } from "../../domain/errors";
@@ -41,11 +43,13 @@ export class WalletsController {
     @Inject(TOKENS.createWallet) private readonly createWallet: CreateWallet,
     @Inject(TOKENS.readStore) private readonly read: ReadStore,
     @Inject(TOKENS.ids) private readonly ids: IdGenerator,
+    @Inject(TOKENS.reconcile) private readonly reconciler: ReconcileWallet,
   ) {}
 
   @Post()
   @HttpCode(201)
-  async create(@Body() body: unknown, @Headers("x-correlation-id") correlationId?: string) {
+  async create(@Body() body: unknown) {
+    const correlationId = currentLogContext()?.correlationId;
     const b = (typeof body === "object" && body !== null ? body : {}) as Record<string, unknown>;
     const errors = [];
     const playerId = b.playerId;
@@ -72,6 +76,15 @@ export class WalletsController {
       });
     }
     return walletView(result.wallet);
+  }
+
+  /** consistent: false is still 200: a divergence is a result, not a request error. */
+  @Post(":walletId/reconciliation")
+  @HttpCode(200)
+  async reconcile(@Param("walletId") walletId: string) {
+    const result = await this.reconciler.execute(requireUuid(walletId, "walletId"));
+    if (!result) throw ProblemException.notFound("WALLET_NOT_FOUND", "wallet not found");
+    return result;
   }
 
   @Get(":walletId")

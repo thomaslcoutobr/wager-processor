@@ -1,15 +1,28 @@
+import pino from "pino";
+import { currentLogContext, type LogFn } from "../../application/log-context";
+
 export type LogLevel = "debug" | "info" | "warn" | "error";
-export type Logger = (level: LogLevel, msg: string, fields?: Record<string, unknown>) => void;
+export type Logger = LogFn;
 
-const ORDER: Record<string, number> = { debug: 10, info: 20, warn: 30, error: 40, silent: 100 };
-
-/** Minimal structured JSON logger (replaced by pino with context in the observability slice). */
+/**
+ * pino, JSON on stdout. Every line gets the ids of the current request/message from
+ * AsyncLocalStorage (correlationId, messageId, transactionId, walletId, providerId). Credentials
+ * are redacted; request logging is reduced to method, route, status and duration, so no body and no
+ * full financial payload ever reaches the logs.
+ */
 export function createLogger(minLevel: string): Logger {
-  const min = ORDER[minLevel] ?? ORDER.info!;
-  return (level, msg, fields = {}) => {
-    if ((ORDER[level] ?? 0) < min) return;
-    const line = JSON.stringify({ level, time: new Date().toISOString(), msg, ...fields });
-    if (level === "error" || level === "warn") console.error(line);
-    else console.log(line);
-  };
+  // synchronous writes: a line logged right before process.exit or a crash is never lost
+  const destination = pino.destination({ dest: 1, sync: true });
+  const p = pino({
+    level: minLevel === "silent" ? "silent" : minLevel,
+    base: undefined,
+    timestamp: pino.stdTimeFunctions.isoTime,
+    formatters: { level: (label) => ({ level: label }) },
+    redact: {
+      paths: ["authorization", "cookie", "headers.authorization", "headers.cookie", "req.headers.authorization", "req.headers.cookie"],
+      censor: "[redacted]",
+    },
+    mixin: () => ({ ...(currentLogContext() ?? {}) }),
+  }, destination);
+  return (level, msg, fields = {}) => p[level](fields, msg);
 }

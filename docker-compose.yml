@@ -47,7 +47,7 @@ services:
       postgres:
         condition: service_healthy
 
-  app:
+  app: &app
     build:
       context: .
       target: app
@@ -62,7 +62,10 @@ services:
       SQS_ENDPOINT: http://aws:4566
       SQS_QUEUE_NAME: wager-transactions.fifo
       SQS_DLQ_NAME: wager-transactions-dlq.fifo
+      SQS_EVENTS_QUEUE_NAME: wager-events.fifo
+      SQS_EVENTS_DLQ_NAME: wager-events-dlq.fifo
       SHUTDOWN_GRACE_MS: "8000"
+      LOG_LEVEL: info
     ports:
       - "${APP_HOST_PORT:-3000}:3000"
     # Must be longer than SHUTDOWN_GRACE_MS so in-flight messages can finish before SIGKILL.
@@ -73,10 +76,24 @@ services:
       aws:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "bun", "-e", "fetch('http://localhost:3000/health/live').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      test: ["CMD", "bun", "-e", "fetch('http://localhost:3000/health/ready').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
       interval: 3s
       timeout: 3s
       retries: 20
+
+  # `docker compose --profile multi up -d --wait` adds two more identical instances (ports 3001, 3002).
+  # Every instance runs HTTP, the SQS consumer, the outbox publisher and the pending worker.
+  app-2:
+    <<: *app
+    profiles: ["multi"]
+    ports:
+      - "${APP2_HOST_PORT:-3001}:3000"
+
+  app-3:
+    <<: *app
+    profiles: ["multi"]
+    ports:
+      - "${APP3_HOST_PORT:-3002}:3000"
 
   # `docker compose run --rm tests` runs the whole suite inside Linux, against the real
   # Postgres and MiniStack above (SIGTERM/SIGKILL semantics match the evaluator's machine).

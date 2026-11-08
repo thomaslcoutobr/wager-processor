@@ -78,6 +78,14 @@ export interface ReadStore {
   /** Candidates only (no lock): PENDING_REFERENCE rows whose next attempt is due. */
   findDuePending(now: Date, limit: number): Promise<Array<{ id: string; walletId: string }>>;
   findInbox(consumerName: string, messageId: string): Promise<InboxMessage | undefined>;
+  /**
+   * One statement, one snapshot: stored balance, Σ ledger, entries checked and chain breaks
+   * (before ≠ previous after, version gaps, first entry not from 0.00, last version ≠ wallet version).
+   * Amounts as signed decimal strings (a tampered ledger can sum below zero).
+   */
+  reconcile(walletId: string): Promise<
+    { currency: string; stored: string; calculated: string; checkedEntries: number; chainBreaks: number } | undefined
+  >;
   /** Unpublished rows and the age of the oldest one (outbox lag). */
   outboxStats(now: Date): Promise<{ pending: number; oldestAgeSeconds: number }>;
 }
@@ -92,6 +100,7 @@ export interface Metrics {
   lockConflict(sqlstate: string): void;
   lockWaitSeconds(seconds: number): void;
   processingSeconds(source: Source, seconds: number): void;
+  reconciliationDivergence(): void;
 }
 
 export const noopMetrics: Metrics = {
@@ -101,6 +110,7 @@ export const noopMetrics: Metrics = {
   lockConflict() {},
   lockWaitSeconds() {},
   processingSeconds() {},
+  reconciliationDivergence() {},
 };
 
 /** Named crash/fault injection points (no-op unless FAILPOINTS is set, never in production). */

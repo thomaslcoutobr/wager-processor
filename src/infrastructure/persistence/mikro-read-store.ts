@@ -66,6 +66,35 @@ export class MikroReadStore implements ReadStore {
     });
   }
 
+  reconcile(walletId: string) {
+    return this.read(async (em) => {
+      const rows = await em.execute<
+        { currency: string; stored: string; calculated: string; checked: number; chain_breaks: number }[]
+      >(
+        `with w as (select id, balance, currency, version from wallets where id = ?),
+              l as (select amount, direction, balance_before, balance_after, wallet_version,
+                           lag(balance_after) over (order by wallet_version) as prev_after,
+                           lag(wallet_version) over (order by wallet_version) as prev_version,
+                           row_number() over (order by wallet_version) as rn
+                      from wallet_ledger_entries where wallet_id = ?)
+         select w.currency,
+                w.balance::text as stored,
+                coalesce((select sum(case direction when 'CREDIT' then amount else -amount end) from l), 0)::numeric(30,2)::text as calculated,
+                (select count(*) from l)::int as checked,
+                ((select count(*) from l
+                   where (prev_after is not null and (balance_before <> prev_after or wallet_version <> prev_version + 1))
+                      or (rn = 1 and balance_before <> 0))
+                 + case when exists (select 1 from l) and (select max(wallet_version) from l) <> w.version then 1 else 0 end
+                )::int as chain_breaks
+           from w`,
+        [walletId, walletId],
+      );
+      const r = rows[0];
+      if (!r) return undefined;
+      return { currency: r.currency, stored: r.stored, calculated: r.calculated, checkedEntries: Number(r.checked), chainBreaks: Number(r.chain_breaks) };
+    });
+  }
+
   outboxStats(now: Date): Promise<{ pending: number; oldestAgeSeconds: number }> {
     return this.read(async (em) => {
       const [r] = await em.execute<{ pending: number; oldest: Date | null }[]>(

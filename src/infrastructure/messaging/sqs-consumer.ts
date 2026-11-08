@@ -6,6 +6,7 @@ import {
   SendMessageCommand,
   type SQSClient,
 } from "@aws-sdk/client-sqs";
+import { enrichLogContext, withLogContext } from "../../application/log-context";
 import type { FailpointPort } from "../../application/ports";
 import type { MessageOutcome, ProcessWagerMessage } from "../../application/process-wager-message";
 import type { Logger } from "../observability/logger";
@@ -142,19 +143,23 @@ export class SqsConsumer implements BackgroundJob {
     }
   }
 
-  /** Returns true when the message was acked. */
-  private async processOne(msg: Message): Promise<boolean> {
+  /** Returns true when the message was acked. Runs in its own log context (messageId, correlationId…). */
+  private processOne(msg: Message): Promise<boolean> {
+    return withLogContext({ sqsMessageId: msg.MessageId }, () => this.processInContext(msg));
+  }
+
+  private async processInContext(msg: Message): Promise<boolean> {
     const sqsId = msg.MessageId ?? "unknown";
     const receipt = msg.ReceiptHandle!;
     const receiveCount = Number(msg.Attributes?.ApproximateReceiveCount ?? "1");
     this.held.set(sqsId, receipt);
-    const fields: Record<string, unknown> = { sqsMessageId: sqsId, receiveCount };
+    const fields: Record<string, unknown> = { receiveCount };
     try {
       this.log("info", "processing message", fields);
       let outcome: MessageOutcome;
       try {
         outcome = await this.handler.handle(msg.Body ?? "", {
-          onEnvelope: (messageId, correlationId) => Object.assign(fields, { messageId, correlationId }),
+          onEnvelope: (messageId, correlationId) => enrichLogContext({ messageId, correlationId, causationId: messageId }),
         });
       } catch (err) {
         outcome = { action: "retry", reason: `UNEXPECTED: ${String(err).slice(0, 120)}` };

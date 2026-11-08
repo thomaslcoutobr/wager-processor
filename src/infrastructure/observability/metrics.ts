@@ -77,7 +77,7 @@ export class PromMetrics implements Metrics {
     labelNames: ["outcome"] as const,
     registers: [this.registry],
   });
-  readonly reconciliationDivergence = new Counter({
+  readonly reconciliationDivergenceCounter = new Counter({
     name: "reconciliation_divergence_total",
     help: "Reconciliations that found stored balance != ledger",
     registers: [this.registry],
@@ -100,5 +100,8 @@ export class PromMetrics implements Metrics {
   }
   processingSeconds(source: Source, seconds: number): void {
     this.processing.observe({ source }, seconds);
+  }
+  reconciliationDivergence(): void {
+    this.reconciliationDivergenceCounter.inc();
   }
 }

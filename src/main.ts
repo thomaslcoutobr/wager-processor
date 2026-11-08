@@ -10,16 +10,25 @@ async function bootstrap(): Promise<void> {
   container.log("info", "listening", { port, roles: container.jobs.map((j) => j.name) });
 
   // Own signal handling (instead of enableShutdownHooks) so a clean drain exits with code 0.
-  // app.close() runs beforeApplicationShutdown (readiness 503, consumer drains or hands messages
-  // back) and then onApplicationShutdown (pool and SQS client closed last).
+  //  1. readiness 503 and HTTP drain (new requests 503 + Connection: close; in-flight ones finish)
+  //  2. app.close(): beforeApplicationShutdown drains the consumer (or hands messages back) and the
+  //     pollers; then the HTTP server closes; onApplicationShutdown closes the pool and SQS client last
+  //  3. idle keep-alive sockets are closed once no request is in flight, so server.close() can return
+  const server = app.getHttpServer() as { closeIdleConnections?(): void; closeAllConnections?(): void };
   let closing = false;
   const shutdown = async (signal: string) => {
     if (closing) return;
     closing = true;
     container.log("info", "shutting down", { signal });
     setTimeout(() => process.exit(1), config.shutdownGraceMs + 5_000).unref(); // hard stop
+    container.health.startDraining();
+    container.httpDrain.start();
+    const httpDone = container.httpDrain.waitIdle(config.shutdownGraceMs).then((idle) => {
+      if (!idle) container.log("warn", "http requests still in flight after the grace period");
+      server.closeAllConnections?.();
+    });
     try {
-      await app.close();
+      await Promise.all([httpDone, app.close()]);
       process.exit(0);
     } catch (err) {
       container.log("error", "shutdown failed", { err: String(err) });

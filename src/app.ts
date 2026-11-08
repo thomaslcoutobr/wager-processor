@@ -20,6 +20,7 @@ import { ResolvePendingReference } from "./application/resolve-pending-reference
 import type { SQSClient } from "@aws-sdk/client-sqs";
 import type { EventBus } from "./application/ports";
 import { ProcessWagerMessage } from "./application/process-wager-message";
+import { ReconcileWallet } from "./application/reconcile-wallet";
 import { PublishOutboxBatch } from "./application/publish-outbox-batch";
 import { createSqsClient, QueueDirectory, SqsEventBus } from "./infrastructure/messaging/sqs";
 import { SqsConsumer } from "./infrastructure/messaging/sqs-consumer";
@@ -27,6 +28,8 @@ import { OutboxPublisherWorker } from "./infrastructure/workers/outbox-publisher
 import { AnonymousIdentity, PROVIDER_IDENTITY, ProviderAuthGuard } from "./interfaces/http/auth";
 import { HealthChecks, HealthController } from "./interfaces/http/health.controller";
 import { jsonBody } from "./interfaces/http/json-body";
+import { requestContext } from "./interfaces/http/request-context";
+import { HttpDrain } from "./interfaces/http/drain";
 import { MetricsController } from "./interfaces/http/metrics.controller";
 import { ProblemFilter } from "./interfaces/http/problem";
 import { TOKENS } from "./interfaces/http/tokens";
@@ -65,6 +68,7 @@ export interface Container {
   outboxPublisher: OutboxPublisherWorker;
   consumer: SqsConsumer;
   jobs: BackgroundJob[];
+  httpDrain: HttpDrain;
 }
 
 export async function buildContainer(config: AppConfig, overrides: AppOverrides = {}): Promise<Container> {
@@ -138,6 +142,7 @@ export async function buildContainer(config: AppConfig, overrides: AppOverrides 
   if (config.enable.pendingWorker) jobs.push({ name: "pending-reference-worker", start: () => pendingWorker.start(), stop: () => pendingWorker.stop() });
   if (config.enable.outboxPublisher) jobs.push(outboxPublisher);
   return {
+    httpDrain: new HttpDrain(),
     sqs,
     queues,
     eventBus,
@@ -191,6 +196,7 @@ class AppModule {
         { provide: PROVIDER_IDENTITY, useValue: new AnonymousIdentity() },
         { provide: TOKENS.lifecycle, useValue: new InfraLifecycle(c.orm, c.sqs) },
         { provide: TOKENS.failpoints, useValue: c.failpoints },
+        { provide: TOKENS.reconcile, useValue: new ReconcileWallet(c.read, c.metrics, c.log) },
         { provide: TOKENS.jobs, useValue: new BackgroundJobs(c.jobs, c.health) },
         ProviderAuthGuard,
       ],
@@ -207,6 +213,8 @@ export async function createApp(
     bodyParser: false,
     logger: config.logLevel === "silent" ? false : ["error", "warn"],
   });
+  app.use(requestContext(container.ids, container.log));
+  app.use(container.httpDrain.middleware());
   app.use(jsonBody(64 * 1024));
   app.useGlobalFilters(new ProblemFilter((error) => container.log("error", "request failed", { err: String(error) })));
   return { app, container };

@@ -1,4 +1,5 @@
 import { DatabaseInvariantError } from "../../application/errors";
+import { withLogContext } from "../../application/log-context";
 import type { Clock, ReadStore } from "../../application/ports";
 import type { ResolvePendingReference } from "../../application/resolve-pending-reference";
 import type { PromMetrics } from "../observability/metrics";
@@ -41,7 +42,9 @@ export class PendingReferenceWorker {
     for (const c of due) {
       let outcome: string;
       try {
-        outcome = await this.resolve.execute(c.id, c.walletId);
+        outcome = await withLogContext({ transactionId: c.id, walletId: c.walletId, causationId: c.id }, () =>
+          this.resolve.execute(c.id, c.walletId),
+        );
       } catch (err) {
         if (err instanceof DatabaseInvariantError) {
           // retrying a decision the schema refuses would loop forever: record it as FAILED

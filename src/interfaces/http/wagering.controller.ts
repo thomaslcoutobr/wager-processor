@@ -1,4 +1,5 @@
 import { Body, Controller, Get, Headers, Inject, Param, Post, Res, UseGuards } from "@nestjs/common";
+import { currentLogContext } from "../../application/log-context";
 import type { FailpointPort, IdGenerator, ReadStore } from "../../application/ports";
 import { SubmitWagerTransaction } from "../../application/submit-wager-transaction";
 import { parseWagerCommand } from "../../application/wager-command";
@@ -22,16 +23,16 @@ export class WageringController {
   async post(
     @Body() body: unknown,
     @Headers("idempotency-key") idempotencyKey: string | undefined,
-    @Headers("x-correlation-id") correlationId: string | undefined,
     @Res({ passthrough: true }) res: HttpReply,
   ) {
     const parsed = parseWagerCommand(body, idempotencyKey);
     if (!parsed.ok) throw ProblemException.validation(parsed.code, parsed.errors);
 
-    const requestId = this.ids.next();
+    const log = currentLogContext();
+    const requestId = log?.requestId ?? this.ids.next();
     const result = await this.submit.execute(parsed.command, {
       source: "http",
-      correlationId: correlationId ?? requestId,
+      correlationId: log?.correlationId ?? requestId,
       causationId: requestId,
     });
 

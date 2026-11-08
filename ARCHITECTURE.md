@@ -649,6 +649,13 @@ mensagem em voo cairia num pool fechado (bug reproduzido na pesquisa **[medido]*
 `stop_grace_period` do compose (20 s) é maior que o grace. O app sobe como PID 1 em forma exec e sai
 com código 0 em cerca de 1 s no `docker compose stop` **[medido na F0]**.
 
+**[ajuste na fatia 5] Dreno do HTTP.** O teste de reinício sob carga mostrou que o `server.close()` não
+retorna enquanto o cliente continua reusando conexões keep-alive: a instância só saía pelo prazo duro,
+com código 1. Agora, no SIGTERM, requisição nova de negócio recebe 503 `SERVICE_UNAVAILABLE` com
+`Retry-After` e toda resposta leva `Connection: close`; as requisições em voo terminam, e só então as
+conexões ociosas são fechadas. O sinal é tratado no `main.ts` (sem `enableShutdownHooks`), para um
+dreno limpo sair com 0.
+
 ---
 
 ## 13. Outbox publisher
@@ -781,10 +788,13 @@ Pontos previstos: `consumer.after_commit_before_ack`, `http.after_commit_before_
 
 ## 17. Observabilidade
 
-- **Logs:** pino em JSON no stdout (nestjs-pino), com `correlationId`, `messageId`, `transactionId`,
+- **Logs:** pino em JSON no stdout, com `correlationId`, `messageId`, `transactionId`,
   `walletId` e `providerId` injetados de um `AsyncLocalStorage` em toda linha (o use case enriquece o
   contexto ao descobrir os ids). `redact` em `authorization` e `cookie`; o log de requisição fica
-  reduzido a método, rota e status. Nunca loga body nem valor financeiro completo.
+  reduzido a método, rota, status e duração. Nunca loga body nem valor financeiro completo (testado em
+  `test/integration/observability.test.ts`). **[implementação]** Usei o pino direto, sem `nestjs-pino`,
+  porque o mesmo logger serve HTTP, fila e workers; a escrita é síncrona, para a linha logada logo
+  antes de um `process.exit` ou de uma queda não se perder.
 - **Métricas** (`GET /metrics`, prom-client), com rótulos de baixa cardinalidade (nunca walletId):
 
 | Exigência | Métrica |

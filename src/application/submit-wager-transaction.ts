@@ -8,6 +8,7 @@ import { outboxFor } from "./event-factory";
 import { payloadHashOf } from "./payload-hash";
 import type { Clock, IdGenerator, Metrics, ReadStore, RequestContext, TransactionalStore, UnitOfWork } from "./ports";
 import { nudgeDependents } from "./resolve-pending-reference";
+import { enrichLogContext } from "./log-context";
 import type { SubmitWagerCommand } from "./wager-command";
 
 export type SubmitResult =
@@ -56,6 +57,7 @@ export class SubmitWagerTransaction {
 
   async execute(command: SubmitWagerCommand, ctx: RequestContext, inbox?: InboxRef): Promise<SubmitResult> {
     const started = performance.now();
+    enrichLogContext({ walletId: command.walletId, providerId: command.providerId });
     const hash = payloadHashOf(command);
     let uniqueRetried = false;
     let conflictRetries = 0;
@@ -63,6 +65,7 @@ export class SubmitWagerTransaction {
       for (;;) {
         try {
           const result = await this.once(command, hash, ctx, inbox);
+          if (result.type === "decided") enrichLogContext({ transactionId: result.transaction.id });
           this.report(result, command, ctx);
           return result;
         } catch (err) {

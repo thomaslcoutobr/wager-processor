@@ -1,3 +1,4 @@
+import { AsyncResource } from "node:async_hooks";
 import { ProblemException, sendProblem, type HttpReply } from "./problem";
 
 interface IncomingLike {
@@ -14,8 +15,11 @@ interface IncomingLike {
  * any other invalid input (instead of the framework's default error shape).
  */
 export function jsonBody(limitBytes: number) {
-  return (req: IncomingLike, res: HttpReply, next: (err?: unknown) => void): void => {
-    if (req.method === "GET" || req.method === "HEAD") return next();
+  return (req: IncomingLike, res: HttpReply, rawNext: (err?: unknown) => void): void => {
+    if (req.method === "GET" || req.method === "HEAD") return rawNext();
+    // stream callbacks run outside the request's async context: bind `next` to it, so the
+    // AsyncLocalStorage log context (same object) reaches the handler
+    const next = AsyncResource.bind(rawNext);
     const chunks: Buffer[] = [];
     let size = 0;
     let aborted = false;
