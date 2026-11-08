@@ -428,6 +428,10 @@ Triggers do ledger:
   transação é `OPENING`. Sem isso, a mesma wallet zerada aceitava uma `WIN` nova de 500,00 com
   lançamento na versão 1, sem mexer na wallet. Como as versões de 2 até a atual já têm lançamento e
   versão acima da atual é recusada, não sobra versão livre para um lançamento sem par.
+  **[ajuste na 2ª rodada, R2a-01/R2c-01]** Faltava uma ponta: um `OPENING` **tardio** ainda cabia na
+  versão 1 de uma wallet aberta com 0,00. Agora o lançamento de um `OPENING` só passa com a wallet
+  ainda na versão 1 e com saldo igual ao `balance_after`, ou seja, gravado junto com a abertura.
+- **[ajuste na 2ª rodada, R2c-03]** `result_currency` é a moeda da wallet (FK `(wallet_id, result_currency)`).
 - Toda coluna de dinheiro recusa `NaN` num CHECK próprio **[ajuste na F4, C4]**. O `numeric` do
   Postgres aceita `'NaN'` e o ordena acima de qualquer número, então `CHECK (balance >= 0)` sozinho
   deixava passar. A regex do `Money` já barra na entrada; o CHECK fecha a porta do SQL direto.
@@ -446,6 +450,13 @@ corresponde a exatamente um lançamento, e a cadeia `balance_before → balance_
 **`wallets.balance = soma do ledger` vale por construção**, não só por disciplina do código. O custo é
 uma busca por índice no commit. A reconciliação ([§15](#15-reconciliação)) continua existindo para
 detectar o que só um papel privilegiado consegue fazer por fora.
+
+**[ajuste na 2ª rodada, R2c-02]** As funções dos triggers citam as tabelas sem schema, e o Postgres
+procura primeiro no schema temporário da sessão quando ele não está no `search_path` **[doc]**. Com o
+`TEMPORARY` que todo papel tem por padrão, o papel da aplicação criava uma `wallet_ledger_entries`
+temporária e o trigger lia a tabela falsa. Agora são duas barreiras, cada uma testada sozinha em
+`test/integration/schema-integrity.test.ts`: todas as funções de trigger rodam com
+`search_path = public, pg_temp`, e o `PUBLIC` perde `TEMPORARY` no banco (`Migration20261108000200_trigger_integrity`).
 
 **[medido na fatia 2]** `test/integration/schema.test.ts` prova que um `UPDATE` de saldo sem lançamento,
 um lançamento sem `UPDATE`, um lançamento de transação `REJECTED` e um lançamento com `balance_before`

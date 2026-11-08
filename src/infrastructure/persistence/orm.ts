@@ -2,12 +2,14 @@ import { Migrator } from "@mikro-orm/migrations";
 import { MikroORM, PostgreSqlDriver } from "@mikro-orm/postgresql";
 import { Migration20261107000100_schema } from "./migrations/Migration20261107000100_schema";
 import { Migration20261108000100_review_hardening } from "./migrations/Migration20261108000100_review_hardening";
+import { Migration20261108000200_trigger_integrity } from "./migrations/Migration20261108000200_trigger_integrity";
 import { ALL_SCHEMAS } from "./schemas";
 
 /** Explicit list instead of a glob: works the same from source, in the container and in tests. */
 export const MIGRATIONS = [
   { name: "Migration20261107000100_schema", class: Migration20261107000100_schema },
   { name: "Migration20261108000100_review_hardening", class: Migration20261108000100_review_hardening },
+  { name: "Migration20261108000200_trigger_integrity", class: Migration20261108000200_trigger_integrity },
 ];
 
 export interface OrmOptions {
